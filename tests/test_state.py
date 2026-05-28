@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -359,3 +359,55 @@ def test_deleting_item_cascades_to_bodies_and_sources(db: Database) -> None:
     assert db.get_item_sources(HASH) == []
     assert db.get_item_entities(HASH) == []
     assert db.get_classification_history(HASH) == []
+
+
+# --- list_unclassified / list_recent_items ------------------------------------
+
+
+def _item_at(h: str, ingested: datetime) -> Item:
+    return Item(
+        canonical_hash=h,
+        url=f"https://example.com/{h[:8]}",
+        title="t",
+        ingested_at=ingested,
+    )
+
+
+def test_list_unclassified_returns_only_unclassified(db: Database) -> None:
+    db.insert_item(_make_item(HASH))
+    db.insert_item(_make_item(HASH2))
+    db.classify_and_activate(_make_classification(HASH))
+    unclassified = db.list_unclassified()
+    assert [i.canonical_hash for i in unclassified] == [HASH2]
+
+
+def test_list_unclassified_excludes_superseded(db: Database) -> None:
+    db.insert_item(_make_item(HASH))
+    db.insert_item(_make_item(HASH2))
+    db.mark_superseded(HASH, HASH2)
+    hashes = {i.canonical_hash for i in db.list_unclassified()}
+    assert HASH not in hashes
+    assert HASH2 in hashes
+
+
+def test_list_unclassified_respects_limit(db: Database) -> None:
+    for i in range(5):
+        db.insert_item(_item_at(f"{i}" * 64, _now() + timedelta(minutes=i)))
+    assert len(db.list_unclassified(limit=3)) == 3
+
+
+def test_list_recent_items_filters_by_ingested(db: Database) -> None:
+    old = _item_at("a" * 64, datetime(2026, 5, 1, tzinfo=UTC))
+    recent = _item_at("b" * 64, datetime(2026, 5, 27, tzinfo=UTC))
+    db.insert_item(old)
+    db.insert_item(recent)
+    got = {i.canonical_hash for i in db.list_recent_items(datetime(2026, 5, 20, tzinfo=UTC))}
+    assert got == {"b" * 64}
+
+
+def test_list_recent_items_excludes_superseded(db: Database) -> None:
+    db.insert_item(_item_at("a" * 64, _now()))
+    db.insert_item(_item_at("b" * 64, _now()))
+    db.mark_superseded("a" * 64, "b" * 64)
+    got = {i.canonical_hash for i in db.list_recent_items(datetime(2026, 1, 1, tzinfo=UTC))}
+    assert got == {"b" * 64}

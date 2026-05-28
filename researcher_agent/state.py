@@ -161,6 +161,29 @@ class Database:
             (winner_hash, loser_hash),
         )
 
+    def list_unclassified(self, *, limit: int | None = None) -> list[Item]:
+        """Items with no active classification (and not superseded), oldest first."""
+        sql = (
+            "SELECT * FROM items "
+            "WHERE current_classification_id IS NULL AND superseded_by IS NULL "
+            "ORDER BY ingested_at, canonical_hash"
+        )
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [_row_to_item(r) for r in rows]
+
+    def list_recent_items(self, since: datetime) -> list[Item]:
+        """Non-superseded items ingested at/after `since`, oldest first (dedupe pool)."""
+        rows = self.conn.execute(
+            "SELECT * FROM items WHERE ingested_at >= ? AND superseded_by IS NULL "
+            "ORDER BY ingested_at, canonical_hash",
+            (_iso(since),),
+        ).fetchall()
+        return [_row_to_item(r) for r in rows]
+
     # --- bodies -------------------------------------------------------------
 
     def set_item_body(self, body: ItemBody) -> None:
