@@ -69,7 +69,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -q --strict-markers"
+# Deselect the token-costing / network suites by default; opt in with `-m golden`
+# (see `make test-golden`) or `-m live`.
+addopts = "-ra -q --strict-markers -m 'not golden and not live'"
 markers = [
     "live: hits real network / APIs (skipped in default CI)",
     "golden: runs against the labeled golden set (costs LLM tokens)",

@@ -32,10 +32,16 @@ Constraints worth memorizing:
 | Entities | `researcher_agent/entities.py` | Regex extraction of CVE / repo / package. Capped at 64/item. |
 | Sources | `researcher_agent/sources/` | `base.py` (Protocol + config), `rss.py` (RSS adapter), `__init__.py` (loader + registry). |
 | Normalize | `researcher_agent/normalize.py` | `normalize_rss(raw, now) -> (Item, [ItemEntity])`. Pure; HTML-strips before extraction. |
-| Collect | `researcher_agent/collect.py` | `run_collect` orchestration. Per-source error isolation; M2 stops at storage. |
+| Config | `researcher_agent/config.py` | Loads `agent.yaml`: config-driven taxonomy, classifier/dedup settings, vault_path. |
+| Prompts | `researcher_agent/prompts.py` + `prompts/*.md` | Prompt files hashed at load; `classifier_version` = hash(prompt + model). |
+| Classifier | `researcher_agent/classify.py` | Batch + per-item retry + token budget + circuit breaker + fallback. Provider-agnostic. |
+| LLM providers | `researcher_agent/llm/` | `base.py` (Protocol + shared JSON parser/framing), `gemini.py`, `ollama.py`, `factory.py`. |
+| Dedupe | `researcher_agent/dedupe.py` | `find_duplicates` — entity-overlap + fuzzy title/window. Pure; conservative. |
+| Collect | `researcher_agent/collect.py` | `run_collect` (fetch/store) + `post_process` (classify→dedupe→render). Per-source error isolation. |
 | Vault writer | `researcher_agent/vault.py` | Renders collection + synthesis reports. Pure functions; atomic writes. |
-| CLI | `researcher_agent/__main__.py` | Typer; `collect` (live as of M2) and `synthesize` (stub through M5). |
-| Tests | `tests/` | Unit + snapshot tests. 198 after M2 (52 after M1); never let this drop silently. |
+| CLI | `researcher_agent/__main__.py` | Typer; `collect` (full pipeline as of M3) and `synthesize` (stub through M5). |
+| Golden set | `config/golden_set.jsonl` | 25 labeled items; `make test-golden` asserts ≥85% top-1 (opt-in, costs tokens). |
+| Tests | `tests/` | Unit + snapshot + golden. 294 after M3 (198 after M2, 52 after M1); never let this drop silently. |
 | Snapshots | `tests/snapshots/` | Vault rendering golden files. Regenerate with `UPDATE_SNAPSHOTS=1 pytest`. |
 | CI | `.github/workflows/ci.yml` | ruff + format-check + mypy --strict + pytest. |
 | state.db | **Not in this repo.** Will live on a dedicated `state` branch (regular commits, no force-push). | Adds full audit history; main stays clean. |
@@ -168,7 +174,7 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 
 ---
 
-## 6. Milestone M2 — COMPLETE (next: M3)
+## 6. Milestone M2 — COMPLETE (M3 also complete — see §7; next: M4)
 
 **Goal:** First source vertical slice + polite HTTP foundation + entity extraction. After M2, `researcher collect --since X --until Y` produces a real collection report (containing only RSS items, no classifier yet — classification lands in M3, so the reports show un-classified items with `topic="unclassified"` as a placeholder, OR M2 skips vault rendering and stops at the storage layer; pick whichever keeps M2 small).
 
@@ -214,13 +220,20 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 
 ## 7. Future milestones (summary)
 
-### M3 — Classifier + dedupe + golden set
+### M3 — Classifier + dedupe + golden set — COMPLETE
 - Gemini provider via `google-genai` SDK; Ollama provider as fallback.
 - Prompt-as-file (`researcher_agent/prompts/classify.md`), hashed at load, hash → `classifier_version`.
 - Per-item retry (not per-batch). Token budget pre-flight.
 - Two-pass dedupe: within-batch (cheap) + against-DB (joined with entity overlap).
 - Golden-set curator spawned to produce `config/golden_set.jsonl` (≥20 to start, ≥50 by end of M3).
 - `make test-golden` runs the classifier against the golden set, asserts ≥85% top-1.
+
+> **M3 resolution notes (decisions made during the build):**
+> - **Provider seam:** orchestration depends only on a `ClassifierProvider` Protocol; real providers (Gemini/Ollama) are thin and share `render_items_message` + `parse_classifications`. The real-API path is exercised only by the opt-in golden eval — all other tests use a fake provider, so the suite is network/token-free.
+> - **Classifier user message is a JSON array, not concatenated text** (security review): untrusted feed content is JSON-escaped so it can't forge item boundaries / inject instructions. Item ids are the `canonical_hash` (not feed-controlled); the parser keeps the first result per id.
+> - **Transient vs content failure** (ops review, load-bearing): a provider *error* (rate-limit/outage) leaves items **unclassified** (skipped → re-tried next run), never persisted as `(other,3)`. Only a real response that can't classify an item falls back. A circuit breaker aborts after `max_consecutive_failures` (default 3). Cold-start cost is bounded by `classifier.max_items_per_run` (default 200) and the dedupe pool size guard.
+> - **Golden set is 25 items** (spec said grow to ≥50 by end of M3) — a solid ambiguity-favoring starter set covering all 10 slugs; grow it as the taxonomy/focus shifts. The ≥85% top-1 assertion has NOT been run here (no `GEMINI_API_KEY`); run `make test-golden` with a key to validate before relying on the classifier.
+> - **`config/agent.yaml` is gitignored** (it carries the personal `vault_path`, invariant #20); `config/agent.example.yaml` is the public artifact. The remaining review items (in-provider 429 backoff, token-estimate accuracy, dedupe blocking) are deferred to M4 — see CHANGELOG.
 
 ### M4 — Remaining sources + sources.yaml + collect cron
 - GitHub releases adapter (via raw `httpx`, **not** PyGithub).

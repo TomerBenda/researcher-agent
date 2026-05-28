@@ -20,14 +20,18 @@ from pathlib import Path
 
 import typer
 
-from researcher_agent.collect import CollectStats, run_collect
+from researcher_agent.collect import CollectStats, PostStats, post_process, run_collect
+from researcher_agent.config import ConfigError, load_agent_config
 from researcher_agent.http import PoliteClient
+from researcher_agent.llm.base import ProviderError
+from researcher_agent.llm.factory import build_classifier_provider
 from researcher_agent.sources import SourceConfigError, load_adapters
 from researcher_agent.state import Database
 
 app = typer.Typer(help="researcher-agent CLI")
 
 DEFAULT_SOURCES = Path("config/sources.yaml")
+DEFAULT_AGENT = Path("config/agent.yaml")
 DEFAULT_DB = Path(".researcher/state.db")
 
 
@@ -54,6 +58,49 @@ def _print_summary(stats: CollectStats) -> None:
     )
 
 
+def _maybe_post_process(
+    db: Database,
+    *,
+    now: datetime,
+    agent_file: Path,
+    classify: bool,
+    vault: str | None,
+) -> PostStats | None:
+    """Load config, build the provider, and run classify/dedupe/render — or skip."""
+    if not classify:
+        return None
+    if not agent_file.exists():
+        typer.echo(
+            f"skipping classification: {agent_file} not found "
+            "(copy config/agent.example.yaml, or pass --no-classify)"
+        )
+        return None
+    try:
+        config = load_agent_config(agent_file)
+    except ConfigError as exc:
+        typer.echo(f"skipping classification: {exc}", err=True)
+        return None
+    try:
+        provider = build_classifier_provider(config.classifier)
+    except ProviderError as exc:
+        typer.echo(f"skipping classification: {exc}")
+        return None
+    return post_process(
+        db, config, provider, now=now, vault_override=Path(vault) if vault else None
+    )
+
+
+def _print_post_summary(post: PostStats) -> None:
+    if post.classify is not None:
+        typer.echo(
+            f"Classified {post.classify.classified} item(s) "
+            f"({post.classify.fallbacks} fallback, {post.classify.skipped} over-budget); "
+            f"deduped {post.deduped}."
+        )
+    if post.report_path is not None:
+        typer.echo(f"Wrote {post.report_path}")
+
+
 @app.command()
 def collect(
     source: list[str] = typer.Option(
@@ -62,6 +109,9 @@ def collect(
     sources_file: Path = typer.Option(
         DEFAULT_SOURCES, "--sources", help="Path to the sources YAML file."
     ),
+    agent_file: Path = typer.Option(
+        DEFAULT_AGENT, "--agent", help="Path to the agent config (taxonomy + classifier)."
+    ),
     db_path: Path = typer.Option(DEFAULT_DB, "--db", help="Path to the SQLite state DB."),
     since: str | None = typer.Option(
         None, help="Only keep items published on/after this ISO date/datetime."
@@ -69,11 +119,17 @@ def collect(
     until: str | None = typer.Option(
         None, help="Only keep items published before this ISO date/datetime."
     ),
+    classify: bool = typer.Option(
+        True, "--classify/--no-classify", help="Classify + dedupe + render after collecting."
+    ),
+    vault: str | None = typer.Option(
+        None, "--vault", help="Override the vault path for the collection report."
+    ),
     fail_on_error: bool = typer.Option(
         False, "--fail-on-error", help="Exit non-zero if any source errors (for smoke tests)."
     ),
 ) -> None:
-    """Gather from sources, normalize, and store. (M2: no classify / vault yet.)"""
+    """Gather from sources, classify, dedupe, and render a collection report."""
     if not sources_file.exists():
         typer.echo(f"sources file not found: {sources_file}", err=True)
         raise typer.Exit(code=2)
@@ -102,6 +158,7 @@ def collect(
     log_mode = os.environ.get("RESEARCHER_LOG_MODE", "dev")
     now = datetime.now(UTC)
 
+    post: PostStats | None = None
     with Database(db_path) as db, PoliteClient() as client:
         stats = run_collect(
             db,
@@ -112,8 +169,13 @@ def collect(
             until=until_dt,
             log_mode=log_mode,
         )
+        post = _maybe_post_process(
+            db, now=now, agent_file=agent_file, classify=classify, vault=vault
+        )
 
     _print_summary(stats)
+    if post is not None:
+        _print_post_summary(post)
     if fail_on_error and stats.any_errors:
         raise typer.Exit(code=1)
 

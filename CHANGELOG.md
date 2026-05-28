@@ -6,6 +6,33 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (M3 — classifier + dedupe + golden set)
+- `researcher collect` now classifies, dedupes, and renders after storing — the full collect pipeline:
+  - **LLM classifier** with provider abstraction: **Gemini** (`gemini-2.5-flash`, free tier) default, **Ollama** offline fallback. Providers are thin; the risky JSON-reply parsing is shared and unit-tested (`llm/base.py`, `llm/gemini.py`, `llm/ollama.py`, `llm/factory.py`).
+  - **Orchestration** (`classify.py`): batched, **per-item retry** at temperature 0 (not per-batch), **token-budget pre-flight** before every call, taxonomy validation, fallback to `(other, 3)` on genuine content failure.
+  - **Prompt-as-file** (`prompts/classify.md`, loaded + hashed via `prompts.py`); `classifier_version` = hash of the rendered system prompt + model id, recorded on every `Classification`.
+  - **Config-driven taxonomy + settings** (`config.py`, `config/agent.example.yaml`): the 10-slug taxonomy, classifier provider/model/batch/budget, dedup thresholds, `vault_path`, and tracking params all live in `agent.yaml` (gitignored — has the personal vault path).
+  - **Dedupe** (`dedupe.py`): cross-post detection via near-identical title in a time window OR a shared strong entity (CVE) with a high title match; winner = highest score, losers superseded with merged sources. Conservative to avoid false merges.
+  - **Vault rendering returns** (deferred from M2): collect writes the day's classified, non-superseded items to `{vault}/collection/{YYYY-MM-DD}.md` (deterministic).
+  - **Golden set** (`config/golden_set.jsonl`, 25 labeled items across all topics) + `tests/test_golden.py` (`make test-golden`): runs the real classifier, asserts ≥85% top-1; opt-in only (deselected from the default suite, skipped without an API key).
+  - New state queries `list_unclassified` / `list_recent_items`; CLI flags `--classify/--no-classify`, `--agent`, `--vault`.
+- Test suite grew from 198 to 294 (no new dependencies; `google-genai` / `ollama` / `rapidfuzz` were already declared).
+
+### Changed
+- `collect` no longer stops at storage — it runs classify → dedupe → render, skipping that stage cleanly (items stored, left unclassified) when no provider/API key is available (offline collection).
+
+### Security / robustness (from M3 security + operations reviews)
+- **Prompt-injection hardening:** the classifier user message is now a JSON array (`render_items_message`), so untrusted feed title/summary content cannot forge item boundaries or inject fake schema/instruction lines. Item ids are the canonical hash (not feed-controlled); the parser keeps the **first** result per id (no duplicate-id overwrite).
+- **Untrusted-output bounds:** the response parser caps input size and entry count, catches `RecursionError` on deeply-nested JSON, rejects absurd `topic`s, and cleans + truncates `rationale` (it is rendered into the public vault).
+- **No fallback poisoning:** a transient provider error (e.g. a rate-limit storm) leaves items **unclassified** (re-tried next run) instead of persisting junk `(other, 3)` labels; only a real response that can't classify an item falls back. A **circuit breaker** aborts the run after repeated consecutive provider failures rather than hammering a throttled API.
+- **Cold-start cost cap:** `classifier.max_items_per_run` (default 200) drains a large backlog over several runs; the O(n²) dedupe pool is skipped above a size guard.
+- No provider path logs the API key, the prompt (which embeds the source list), or feed URLs; the key is read only from the environment.
+
+### Deferred to M4 (captured from the M3 reviews)
+- Provider-level `Retry-After` / exponential backoff on 429 (the circuit breaker prevents poisoning; in-provider backoff would also avoid the storm).
+- More accurate token accounting (output tokens + the system prompt re-sent on each retry); the current `~chars/4` estimate is a coarse guardrail only.
+- A real dedupe blocking strategy (window/block before the pairwise compare) for large first imports, instead of the size-guard skip.
+
 ### Added (M2 — first source vertical slice + polite HTTP + entity extraction)
 - `researcher collect` now works end-to-end for RSS sources (fetch → normalize → store):
   - **Polite HTTP client** (`http.py`): descriptive User-Agent, per-host request serialization with a configurable minimum interval, `Retry-After` honored on 429 (clamped to a max), conditional-GET (`If-None-Match` / `If-Modified-Since`) passthrough.

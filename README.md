@@ -15,11 +15,15 @@ Two functions over a shared substrate (SQLite store + Obsidian vault), each invo
 
 ```bash
 uv sync
-cp config/sources.example.yaml config/sources.yaml
-# edit config/sources.yaml to taste (RSS sources work today)
+cp config/sources.example.yaml config/sources.yaml   # your feeds
+cp config/agent.example.yaml   config/agent.yaml      # taxonomy + classifier + vault_path
+export GEMINI_API_KEY=...                             # free tier from Google AI Studio
 
-# gather from your sources and store to the local SQLite state db
+# gather -> classify -> dedupe -> render a collection report
 uv run researcher collect
+
+# collect without the LLM step (offline; just fetch + store)
+uv run researcher collect --no-classify
 
 # target a single source, or constrain the window
 uv run researcher collect --source rss:simon-willison
@@ -28,16 +32,23 @@ uv run researcher collect --since 2026-05-01 --until 2026-05-28
 
 `collect` is idempotent and polite: it honors per-source ETag / Last-Modified
 caching (a re-run against unchanged feeds does no work) and stores into
-`.researcher/state.db` by default (`--db` to override).
+`.researcher/state.db` by default (`--db` to override). Classification is skipped
+gracefully if no `GEMINI_API_KEY` (or `config/agent.yaml`) is present — items are
+still stored, just left unclassified for a later run.
+
+```bash
+make test          # unit + integration suite (no network, no tokens)
+make test-golden   # opt-in: real classifier vs config/golden_set.jsonl (costs tokens)
+```
 
 See [`docs/researcher-agent-spec.md`](docs/researcher-agent-spec.md) for the full design.
 
 ## Status
 
-Early build — see `CHANGELOG.md`. As of **M2**, `collect` ingests RSS sources
-end-to-end (fetch → canonicalize → extract entities → store). Classification
-(`GEMINI_API_KEY`), cross-source dedupe, the remaining source types, vault
-rendering, and the `synthesize` agent land in M3–M5.
+Early build — see `CHANGELOG.md`. As of **M3**, `collect` runs the full pipeline:
+fetch → canonicalize → extract entities → **classify (Gemini/Ollama) → dedupe →
+render** a collection report to the vault. The remaining source types
+(GitHub/arXiv/HN), the daily cron, and the `synthesize` agent land in M4–M5.
 
 ## License
 

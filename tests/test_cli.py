@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from researcher_agent.__main__ import _parse_window_dt, app
+from researcher_agent.__main__ import _maybe_post_process, _parse_window_dt, app
+from researcher_agent.state import Database
 
 runner = CliRunner()
 
@@ -105,3 +106,47 @@ def test_synthesize_still_stub(tmp_path: Path) -> None:
 def test_help_runs(cmd: str) -> None:
     result = runner.invoke(app, [cmd, "--help"])
     assert result.exit_code == 0
+
+
+# --- post-processing glue (no network) ----------------------------------------
+
+AGENT_YAML = """
+taxonomy:
+  - slug: tooling
+    description: tools
+  - slug: other
+    description: misc
+"""
+
+
+def _db(tmp_path: Path) -> Database:
+    return Database(tmp_path / "state.db")
+
+
+def test_post_process_disabled_returns_none(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    out = _maybe_post_process(
+        db, now=datetime.now(UTC), agent_file=tmp_path / "agent.yaml", classify=False, vault=None
+    )
+    assert out is None
+
+
+def test_post_process_missing_agent_returns_none(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    out = _maybe_post_process(
+        db, now=datetime.now(UTC), agent_file=tmp_path / "absent.yaml", classify=True, vault=None
+    )
+    assert out is None
+
+
+def test_post_process_no_api_key_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    agent = tmp_path / "agent.yaml"
+    agent.write_text(AGENT_YAML, encoding="utf-8")  # provider defaults to gemini
+    db = _db(tmp_path)
+    out = _maybe_post_process(
+        db, now=datetime.now(UTC), agent_file=agent, classify=True, vault=None
+    )
+    assert out is None  # gracefully skipped, no crash
