@@ -1,0 +1,29 @@
+# Example source list (public). Copy to config/sources.yaml (gitignored) and edit.
+#
+#   cp config/sources.example.yaml config/sources.yaml
+#
+# Each entry needs a unique `name` and a `type`. M2 supports `type: rss` only;
+# github_releases / github_topic / arxiv / hn_search land in M4. The curated
+# ~50-source list is produced in M4 (see CLAUDE.md §5.6 source-list-researcher);
+# the entries below are a small, recognizable starter set for AI-security work.
+
+sources:
+  - name: rss:simon-willison
+    type: rss
+    url: https://simonwillison.net/atom/everything/
+    # high signal on LLMs, prompt injection, agentic tooling
+
+  - name: rss:embracethered
+    type: rss
+    url: https://embracethered.com/blog/index.xml
+    # Johann Rehberger — prompt injection, agent & MCP security
+
+  - name: rss:google-project-zero
+    type: rss
+    url: https://googleprojectzero.blogspot.com/feeds/posts/default
+    # deep vulnerability research; not AI-specific but high signal
+
+  - name: rss:github-security-blog
+    type: rss
+    url: https://github.blog/category/security/feed/
+    # supply-chain & platform security from GitHub

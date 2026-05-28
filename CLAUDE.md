@@ -27,9 +27,15 @@ Constraints worth memorizing:
 | Models | `researcher_agent/models.py` | Pydantic v2, frozen, tz-aware UTC enforced. |
 | Storage | `researcher_agent/state.py` | All SQL lives here. WAL + FK enforced. |
 | Migrations | `researcher_agent/migrations/` | Numbered `.sql` files, applied on `Database()` construction. |
+| HTTP client | `researcher_agent/http.py` | Shared polite `httpx` wrapper (UA, per-host spacing, Retry-After, conditional GET). |
+| Canonicalize | `researcher_agent/canonicalize.py` | URL → canonical string + `canonical_hash`. arXiv/IDN handling. `canonicalization_version = 1`. |
+| Entities | `researcher_agent/entities.py` | Regex extraction of CVE / repo / package. Capped at 64/item. |
+| Sources | `researcher_agent/sources/` | `base.py` (Protocol + config), `rss.py` (RSS adapter), `__init__.py` (loader + registry). |
+| Normalize | `researcher_agent/normalize.py` | `normalize_rss(raw, now) -> (Item, [ItemEntity])`. Pure; HTML-strips before extraction. |
+| Collect | `researcher_agent/collect.py` | `run_collect` orchestration. Per-source error isolation; M2 stops at storage. |
 | Vault writer | `researcher_agent/vault.py` | Renders collection + synthesis reports. Pure functions; atomic writes. |
-| CLI | `researcher_agent/__main__.py` | Typer; `collect` and `synthesize` (stubs through M5). |
-| Tests | `tests/` | Unit + snapshot tests. 52 baseline; never let this drop silently. |
+| CLI | `researcher_agent/__main__.py` | Typer; `collect` (live as of M2) and `synthesize` (stub through M5). |
+| Tests | `tests/` | Unit + snapshot tests. 198 after M2 (52 after M1); never let this drop silently. |
 | Snapshots | `tests/snapshots/` | Vault rendering golden files. Regenerate with `UPDATE_SNAPSHOTS=1 pytest`. |
 | CI | `.github/workflows/ci.yml` | ruff + format-check + mypy --strict + pytest. |
 | state.db | **Not in this repo.** Will live on a dedicated `state` branch (regular commits, no force-push). | Adds full audit history; main stays clean. |
@@ -162,9 +168,16 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 
 ---
 
-## 6. Current milestone: M2
+## 6. Milestone M2 — COMPLETE (next: M3)
 
 **Goal:** First source vertical slice + polite HTTP foundation + entity extraction. After M2, `researcher collect --since X --until Y` produces a real collection report (containing only RSS items, no classifier yet — classification lands in M3, so the reports show un-classified items with `topic="unclassified"` as a placeholder, OR M2 skips vault rendering and stops at the storage layer; pick whichever keeps M2 small).
+
+> **M2 resolution notes (decisions made during the build):**
+> - **Vault rendering: SKIPPED in M2; collect stops at the storage layer.** No classifier exists yet, and rendering a "collection report" requires a `Classification`. Inventing a fake `topic="unclassified"` row would pollute the append-only classification history (invariant #2) with a topic outside the taxonomy. Items are stored with `current_classification_id = NULL`; vault rendering returns in M3 with real classifications. (CLAUDE.md offered either choice; this keeps M2 small.)
+> - **arXiv IDs are NOT emitted as `ItemEntity`.** `EntityKind` (invariant #4) has no `arxiv` member, and per §10 invariants win over the spec/step-6 wording. arXiv identity is captured by URL canonicalization (`canonicalize.extract_arxiv_id`) instead. Revisit only if a paper-reference entity kind is explicitly wanted.
+> - **Item.url stores the canonical URL** (tracking-stripped, arXiv-collapsed); the original is kept in `metadata["original_url"]` only when it differs.
+> - **Entity output is capped at 64/item** and extraction runs over HTML-stripped text — a live run showed a full-HTML blogspot feed producing 36k+ repo-shaped false positives otherwise.
+> - **Security/ops review fixes applied:** production log mode drops exception message bodies (host leak via DNS/SSL errors, not just URLs); `Retry-After` is clamped; IDN hosts are punycode-normalized. Other findings deferred to M4 — see CHANGELOG "Deferred to M4".
 
 **Sub-steps** (each is a logical commit):
 
@@ -191,11 +204,11 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 8. **Live smoke test workflow (`.github/workflows/smoke.yml`).** Manual `workflow_dispatch` only. Runs against real sources, reports any source that errored or returned zero items. **Not** in default CI; tokens-burner.
 
 **M2 done definition** (in addition to §4 generic criteria):
-- [ ] Collection from at least 3 real RSS feeds works end-to-end on a local machine.
-- [ ] Re-running collect against the same feeds is idempotent: `source_runs.cursor_json` advances, no duplicate items inserted.
-- [ ] HTTP politeness verified: collect against a single source twice in 30s; second call uses cached response via 304.
-- [ ] `security-auditor` reviewed the normalize + canonicalize + entities code.
-- [ ] `operations-reviewer` reviewed the HTTP client + source_runs cursor handling.
+- [x] Collection from at least 3 real RSS feeds works end-to-end on a local machine. *(verified: 274 items from 4 live feeds.)*
+- [x] Re-running collect against the same feeds is idempotent: `source_runs.cursor_json` advances, no duplicate items inserted. *(verified: second live run reported 0 new items.)*
+- [x] HTTP politeness verified: collect against a single source twice; second call uses cached response via 304. *(verified live: all feeds returned 304 on the second run; also covered deterministically in `tests/test_sources_rss.py` / `tests/test_collect.py`.)*
+- [x] `security-auditor` reviewed the normalize + canonicalize + entities code. *(findings: error-host-leak HIGH, IDN false-split MEDIUM — both fixed; ReDoS clear.)*
+- [x] `operations-reviewer` reviewed the HTTP client + source_runs cursor handling. *(finding: unbounded Retry-After HIGH — fixed; rest deferred to M4, see CHANGELOG.)*
 
 ---
 

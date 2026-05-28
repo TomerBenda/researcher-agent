@@ -50,6 +50,11 @@ ignore = ["E501"]  # line length handled by formatter
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
 
+# Typer expresses CLI options/arguments as calls in parameter defaults; that is
+# the framework's intended idiom, not the mutable-default footgun B008 targets.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

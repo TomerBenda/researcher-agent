@@ -1,0 +1,39 @@
+name: Smoke (live sources)
+
+# Manual only. This hits real source endpoints over the network and is NOT part
+# of default CI — it is a network/token burner used to validate that the
+# configured feeds are alive and the collect pipeline works end-to-end.
+on:
+  workflow_dispatch:
+
+# Run collection in production logging mode so any URLs in error messages are
+# hashed before they reach the public Actions log.
+env:
+  RESEARCHER_LOG_MODE: production
+
+jobs:
+  smoke:
+    name: collect against live RSS feeds
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Use the public example source list
+        run: cp config/sources.example.yaml config/sources.yaml
+
+      - name: Collect (fail the job if any source errors)
+        run: uv run researcher collect --fail-on-error --db "$RUNNER_TEMP/smoke-state.db"
