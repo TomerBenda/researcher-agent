@@ -1,7 +1,5 @@
 # CLAUDE.md — researcher-agent development guide
 
-This file is auto-loaded by Claude Code in this repo. It also works as a one-shot brief if pasted into a fresh session. Read it fully before touching code.
-
 ---
 
 ## 1. Project at a glance
@@ -10,8 +8,6 @@ This file is auto-loaded by Claude Code in this repo. It also works as a one-sho
 
 - **`researcher collect`** — gather from configured sources (RSS, GitHub, arXiv, HN), classify, dedupe, store; render a collection report to the vault. Default cadence: daily, via GitHub Actions.
 - **`researcher synthesize`** — read items in a window, run a tool-using LLM agent, extract entities, queue follow-ups, render a synthesis report. Default cadence: weekly, but ad-hoc runs over arbitrary windows are first-class.
-
-Periodicity is an orchestration concern, **not** part of the function identity. Resist any drift back to "daily pipeline" / "weekly agent" framing in code, comments, or filenames.
 
 Owner: Tomer Benda. The repo is **public from day one** — every commit and code decision is visible. Treat the README and code as part of the research artifact.
 
