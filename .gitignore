@@ -5,8 +5,9 @@ state.db-*
 *.sqlite
 *.sqlite3
 
-# Local config (sources may reveal personal interests)
+# Local config (sources reveal personal interests; agent.yaml has vault_path)
 config/sources.yaml
+config/agent.yaml
 .env
 .env.local
 

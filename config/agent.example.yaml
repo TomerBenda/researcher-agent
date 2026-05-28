@@ -1,0 +1,58 @@
+# Example agent config (public). Copy to config/agent.yaml (gitignored) and edit.
+#
+#   cp config/agent.example.yaml config/agent.yaml
+#
+# vault_path is personal (it leaks your filesystem layout) so agent.yaml is
+# gitignored; only this example is committed.
+
+# Where collection/synthesis reports are written. Leave unset to skip vault
+# rendering. The real inbox is a separate repo Obsidian syncs from.
+vault_path: /path/to/your/obsidian-inbox
+
+research_focus: |
+  AI security research, currently emphasizing MCP (Model Context Protocol)
+  supply-chain attacks, agentic coding/browser tools, and prompt injection.
+
+classifier:
+  provider: gemini          # gemini | ollama | anthropic
+  model: gemini-2.5-flash   # free tier on Google AI Studio
+  batch_size: 10
+  temperature: 0.2
+  # Optional per-run token ceiling; classification stops (items left unclassified)
+  # rather than blowing the free-tier budget. Omit for no limit.
+  token_budget: 1000000
+  # Cap items classified per run so a cold backlog drains over several runs
+  # instead of bursting against the free-tier API. Omit for no cap.
+  max_items_per_run: 200
+
+dedup:
+  fuzzy_title_threshold: 0.92   # Levenshtein ratio for "same title"
+  fuzzy_window_hours: 48        # only items published within this window can dupe
+  entity_title_threshold: 0.85  # lower bar when a strong entity (CVE) is shared
+
+# Extra query params stripped during URL canonicalization (beyond the built-ins).
+tracking_params_to_strip: []
+
+# The classification taxonomy. Config-driven so it can evolve without code
+# changes — top-1 `topic` plus honest `secondary_topics`.
+taxonomy:
+  - slug: mcp-ecosystem
+    description: New MCP servers, releases, ecosystem news, MCP-related tooling
+  - slug: mcp-security
+    description: MCP-specific vulnerabilities, advisories, security analyses
+  - slug: agent-security
+    description: "Agent security broadly: tool use, sandbox escapes, multi-agent issues"
+  - slug: prompt-injection
+    description: Prompt injection findings, defenses, taxonomies
+  - slug: coding-agents
+    description: Claude Code, Cursor, Codex, Cline, OpenHands — security-relevant content
+  - slug: browser-agents
+    description: Agentic browsers — security-relevant content
+  - slug: ai-safety-research
+    description: Alignment, evals, capability research with security implications
+  - slug: tooling
+    description: Useful tools/libraries for AI security work
+  - slug: other
+    description: Worth keeping but does not fit cleanly
+  - slug: noise
+    description: Skip — marketing, off-topic, low quality
