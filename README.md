@@ -14,4 +14,19 @@ Two functions over a shared substrate (SQLite store + Obsidian vault), each invo
 ## Quick start
 
 ```bash
-uv 
+uv sync
+cp config/sources.example.yaml config/sources.yaml
+# edit config/sources.yaml and config/agent.yaml
+export GEMINI_API_KEY=...
+uv run researcher collect
+```
+
+See [`docs/researcher-agent-spec.md`](docs/researcher-agent-spec.md) for the full design.
+
+## Status
+
+Early build — see `CHANGELOG.md`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

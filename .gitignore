@@ -49,4 +49,7 @@ htmlcov/
 .idea/
 *.swp
 *.swo
-.D
+.DS_Store
+
+# uv
+uv.lock

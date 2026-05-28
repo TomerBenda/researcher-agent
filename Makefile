@@ -30,4 +30,4 @@ check: lint typecheck test
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache dist build *.egg-info
-	find . -type d -name __pycache__ 
+	find . -type d -name __pycache__ -exec rm -rf {} +
