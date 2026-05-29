@@ -175,6 +175,38 @@ class Database:
             (winner_hash, loser_hash),
         )
 
+    def resolve_supersession_root(self, canonical_hash: str) -> str:
+        """Follow the `superseded_by` chain to the surviving (non-superseded) item.
+
+        Dedupe runs every collect over a pool that excludes already-superseded
+        items, so across runs a former winner can itself be superseded by a newer
+        duplicate. This resolves to the current survivor so callers never point a
+        new supersession at an item that is itself gone. Cycle-guarded.
+        """
+        seen: set[str] = {canonical_hash}
+        current = canonical_hash
+        while True:
+            row = self.conn.execute(
+                "SELECT superseded_by FROM items WHERE canonical_hash = ?", (current,)
+            ).fetchone()
+            nxt = row["superseded_by"] if row is not None else None
+            if nxt is None or nxt in seen:
+                return current
+            seen.add(nxt)
+            current = nxt
+
+    def repoint_supersessions(self, old_target: str, new_target: str) -> int:
+        """Re-point every item currently superseded by `old_target` to `new_target`.
+
+        Keeps supersession a flat star (loser -> surviving winner) rather than a
+        chain when a former winner is itself later superseded. Returns rows moved.
+        """
+        cur = self.conn.execute(
+            "UPDATE items SET superseded_by = ? WHERE superseded_by = ?",
+            (new_target, old_target),
+        )
+        return cur.rowcount
+
     def list_unclassified(self, *, limit: int | None = None) -> list[Item]:
         """Items with no active classification (and not superseded), oldest first."""
         sql = (

@@ -128,6 +128,40 @@ def test_mark_superseded(db: Database) -> None:
     assert row["superseded_by"] == HASH2
 
 
+def test_resolve_supersession_root_follows_chain(db: Database) -> None:
+    c = "c" * 64
+    db.insert_item(_make_item(HASH, "a"))
+    db.insert_item(_make_item(HASH2, "b"))
+    db.insert_item(_make_item(c, "d"))
+    db.mark_superseded(HASH, HASH2)  # a -> b
+    db.mark_superseded(HASH2, c)  # b -> d (a now transitively -> d)
+    assert db.resolve_supersession_root(HASH) == c
+    assert db.resolve_supersession_root(c) == c  # a survivor resolves to itself
+
+
+def test_resolve_supersession_root_is_cycle_safe(db: Database) -> None:
+    db.insert_item(_make_item(HASH, "a"))
+    db.insert_item(_make_item(HASH2, "b"))
+    db.mark_superseded(HASH, HASH2)
+    db.mark_superseded(HASH2, HASH)  # pathological cycle a<->b
+    # must terminate (not loop forever) and return a member of the cycle
+    assert db.resolve_supersession_root(HASH) in {HASH, HASH2}
+
+
+def test_repoint_supersessions_moves_dependents(db: Database) -> None:
+    c = "c" * 64
+    db.insert_item(_make_item(HASH, "a"))
+    db.insert_item(_make_item(HASH2, "b"))
+    db.insert_item(_make_item(c, "d"))
+    db.mark_superseded(HASH, HASH2)  # a -> b
+    moved = db.repoint_supersessions(HASH2, c)  # everything pointing at b now points at d
+    assert moved == 1
+    row = db.conn.execute(
+        "SELECT superseded_by FROM items WHERE canonical_hash = ?", (HASH,)
+    ).fetchone()
+    assert row["superseded_by"] == c
+
+
 # --- bodies -------------------------------------------------------------------
 
 

@@ -357,17 +357,23 @@ def dedupe_recent(
         window_hours=config.fuzzy_window_hours,
     )
     for loser, winner in pairs:
+        # The winner comes from the non-superseded pool, but resolve to its root
+        # defensively so a cross-run winner-flip can't point at a gone item.
+        root = db.resolve_supersession_root(winner)
         for src in db.get_item_sources(loser):
             db.add_item_source(
                 ItemSource(
-                    canonical_hash=winner,
+                    canonical_hash=root,
                     source_name=src.source_name,
                     source_type=src.source_type,
                     external_id=src.external_id,
                     first_seen_at=src.first_seen_at,
                 )
             )
-        db.mark_superseded(loser, winner)
+        db.mark_superseded(loser, root)
+        # Flatten any pre-existing chain: items that had lost to `loser` in an
+        # earlier run must now point at the surviving root, not a superseded item.
+        db.repoint_supersessions(loser, root)
     return len(pairs)
 
 

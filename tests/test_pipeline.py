@@ -184,6 +184,50 @@ def test_dedupe_leaves_distinct_items(db: Database) -> None:
     assert pairs == 0
 
 
+def _set_score(db: Database, h: str, score: int) -> None:
+    from researcher_agent.models import Classification
+
+    db.classify_and_activate(
+        Classification(
+            canonical_hash=h,
+            topic="tooling",
+            score=score,
+            rationale="r",
+            classifier_version="v",
+            classifier_model="m",
+            classified_at=NOW,
+        )
+    )
+
+
+def _superseded_by(db: Database, h: str) -> str | None:
+    row = db.conn.execute(
+        "SELECT superseded_by FROM items WHERE canonical_hash = ?", (h,)
+    ).fetchone()
+    return row["superseded_by"]
+
+
+def test_dedupe_flattens_chain_on_cross_run_winner_flip(db: Database) -> None:
+    # Run 1: a (low score) loses to b. Run 2: a newer d outranks b and wins. The
+    # item that had lost to b (a) must re-point to the surviving root d, not be
+    # left in a stale a->b->d chain (b is itself superseded now). Otherwise a
+    # one-level winner lookup lands on a gone item and the digest math drifts.
+    a = _add_item(db, "a", "Same Headline", source="rss:a")
+    b = _add_item(db, "b", "Same Headline", source="rss:b")
+    _set_score(db, a, 3)
+    _set_score(db, b, 9)
+    assert dedupe_recent(db, since=NOW - timedelta(days=7), config=DedupConfig(), now=NOW) == 1
+    assert _superseded_by(db, a) == b  # a -> b after run 1
+
+    d = _add_item(db, "d", "Same Headline", source="rss:d")
+    _set_score(db, d, 10)
+    assert dedupe_recent(db, since=NOW - timedelta(days=7), config=DedupConfig(), now=NOW) == 1
+    assert _superseded_by(db, b) == d  # b -> d
+    assert _superseded_by(db, a) == d  # a re-pointed to the survivor (flat star, no chain)
+    # d, the survivor, inherited every source seen across the merged items
+    assert {s.source_name for s in db.get_item_sources(d)} == {"rss:a", "rss:b", "rss:d"}
+
+
 # --- render_collection_to_vault ------------------------------------------------
 
 

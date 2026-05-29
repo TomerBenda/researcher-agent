@@ -71,41 +71,39 @@ def find_duplicates(
     window_hours: int = 48,
     strong_kinds: tuple[str, ...] = ("cve",),
 ) -> list[tuple[str, str]]:
-    """Return (loser_hash, winner_hash) pairs for detected duplicate clusters."""
-    n = len(candidates)
-    parent = list(range(n))
+    """Return (loser_hash, winner_hash) pairs for detected cross-post duplicates.
 
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
+    Conservative star-assignment, NOT transitive clustering. The duplicate
+    relation is fuzzy (title-similarity + time window + entity overlap) and so is
+    *not* transitive — A~B and B~C does not imply A~C (two items 40h apart can
+    each match a bridge item while being 80h apart themselves). Union-find would
+    collapse such a chain into one cluster and silently drop a genuinely-distinct
+    item from the digest (the exact failure invariant #17 warns against).
 
-    def union(i: int, j: int) -> None:
-        parent[find(i)] = find(j)
-
-    for i in range(n):
-        for j in range(i + 1, n):
+    Instead: process candidates best-first (`_winner_key`); each not-yet-claimed
+    candidate becomes a winner that claims every *directly*-duplicate, worse-ranked,
+    not-yet-claimed candidate as its loser. A claimed loser is never itself made a
+    winner, so no supersession chains are produced and only directly-judged pairs
+    merge.
+    """
+    order = sorted(range(len(candidates)), key=lambda i: _winner_key(candidates[i]))
+    claimed: set[int] = set()  # indices already assigned as someone's loser
+    pairs: list[tuple[str, str]] = []
+    for pos, wi in enumerate(order):
+        if wi in claimed:
+            continue  # an item that lost to a better winner cannot itself be a winner
+        winner = candidates[wi]
+        for li in order[pos + 1 :]:  # only ever lose a worse-ranked item to a better one
+            if li in claimed:
+                continue
             if _is_duplicate(
-                candidates[i],
-                candidates[j],
+                winner,
+                candidates[li],
                 title_threshold=title_threshold,
                 entity_title_threshold=entity_title_threshold,
                 window_hours=window_hours,
                 strong_kinds=strong_kinds,
             ):
-                union(i, j)
-
-    clusters: dict[int, list[DedupCandidate]] = {}
-    for i in range(n):
-        clusters.setdefault(find(i), []).append(candidates[i])
-
-    pairs: list[tuple[str, str]] = []
-    for members in clusters.values():
-        if len(members) < 2:
-            continue
-        winner = min(members, key=_winner_key)
-        for member in members:
-            if member.canonical_hash != winner.canonical_hash:
-                pairs.append((member.canonical_hash, winner.canonical_hash))
+                claimed.add(li)
+                pairs.append((candidates[li].canonical_hash, winner.canonical_hash))
     return pairs

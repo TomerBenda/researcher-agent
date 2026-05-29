@@ -6,6 +6,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed / hardened (post-M4 review remediation)
+- **Dedupe no longer false-merges via transitivity.** `find_duplicates` was union-find clustering over a *non-transitive* relation (fuzzy title + time window + entity overlap): A~B and B~C do not imply A~C, so a bridge item could collapse two genuinely-distinct items into one cluster and silently drop one from the digest (the failure invariant #17 warns against). Replaced with conservative best-first star-assignment — only directly-judged duplicate pairs merge, and a loser is never also made a winner (no within-pass chains).
+- **Dedupe supersession stays a flat star across runs.** Dedupe runs every collect over a pool that excludes already-superseded items, so a former winner can itself be superseded by a newer, higher-scored duplicate on a later run — leaving its prior losers pointing at a now-superseded item (a `B→A→D` chain). Added `Database.resolve_supersession_root` + `repoint_supersessions`; `dedupe_recent` now resolves the winner to its surviving root and re-points any pre-existing dependents, so `superseded_by` is always one hop to the survivor.
+
 ### Added (M4 — remaining source types + daily cron + ops commands)
 - Three new source types beyond RSS, all via the shared polite client (raw httpx / feedparser; no PyGithub), each with cursor handling and MockTransport tests:
   - **arXiv** (`sources/arxiv.py`): queries the export Atom API; reuses the shared feedparser helpers (`sources/feed.py`).

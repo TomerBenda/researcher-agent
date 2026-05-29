@@ -94,6 +94,32 @@ def test_transitive_cluster_collapses_to_one_winner() -> None:
     assert set(pairs.values()) == {b.canonical_hash}
 
 
+def test_non_transitive_window_chain_does_not_false_merge() -> None:
+    # a~b (40h apart) and b~c (40h apart) are each within the 48h window, but a
+    # and c are 80h apart -> NOT duplicates. The relation is not transitive:
+    # union-find would wrongly collapse all three and drop c from the digest.
+    # Conservative pairing must merge only the directly-duplicate pair (b->a) and
+    # leave c standing on its own.
+    a = _c("a", "Same Headline", score=9, published_at=BASE)
+    b = _c("b", "Same Headline", score=5, published_at=BASE + timedelta(hours=40))
+    c = _c("c", "Same Headline", score=1, published_at=BASE + timedelta(hours=80))
+    pairs = dict(find_duplicates([a, b, c]))
+    assert pairs == {b.canonical_hash: a.canonical_hash}
+    assert c.canonical_hash not in pairs  # c survives — not a duplicate of a
+
+
+def test_loser_is_never_also_a_winner() -> None:
+    # If b loses to a, b must not then be recorded as the winner of c, even when
+    # b~c directly: that would create a b->? while b itself is superseded (a chain).
+    # c must instead attach to the surviving root a (if a~c) or stand alone.
+    a = _c("a", "Same Headline", score=9, published_at=BASE)
+    b = _c("b", "Same Headline", score=5, published_at=BASE + timedelta(hours=40))
+    c = _c("c", "Same Headline", score=1, published_at=BASE + timedelta(hours=80))
+    winners = set(dict(find_duplicates([a, b, c])).values())
+    losers = set(dict(find_duplicates([a, b, c])).keys())
+    assert winners.isdisjoint(losers)  # no item is both a winner and a loser
+
+
 def test_undated_identical_titles_are_duplicates() -> None:
     a = _c("a", "No Date Title", score=3, published_at=None)
     b = _c("b", "No Date Title", score=6, published_at=None)
