@@ -144,8 +144,10 @@ jobs:
               git checkout -q --orphan state
             fi
             cp ../.researcher/state.db state.db
-            # state.db is the only tracked file; -wal/-shm stay local (gitignored).
-            echo "state.db" > .gitignore
+            # Ignore the SQLite WAL sidecars (not state.db itself!). We only ever
+            # `git add state.db .gitignore` by explicit path — never `git add -A`
+            # — so nothing else can sneak in either.
+            printf 'state.db-wal\nstate.db-shm\nstate.db-journal\n' > .gitignore
             git add state.db .gitignore
             if git diff --cached --quiet; then
               echo "no state change to commit"
