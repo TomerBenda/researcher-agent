@@ -36,6 +36,39 @@ def test_loads_rss_adapters(tmp_path: Path) -> None:
     assert adapters[0].config.url == "https://a.example.com/feed.xml"
 
 
+def test_loads_all_supported_types(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        """
+        sources:
+          - name: rss:a
+            type: rss
+            url: https://a.example.com/feed.xml
+          - name: arxiv:cr
+            type: arxiv
+            query: cat:cs.CR
+          - name: hn:mcp
+            type: hn_search
+            query: mcp
+          - name: gh-rel:x
+            type: github_releases
+            repo: owner/name
+          - name: gh-topic:mcp
+            type: github_topic
+            topic: mcp-server
+            min_stars: 5
+        """,
+    )
+    adapters = load_adapters(path)
+    assert [a.config.type for a in adapters] == [
+        "rss",
+        "arxiv",
+        "hn_search",
+        "github_releases",
+        "github_topic",
+    ]
+
+
 def test_unknown_type_errors_at_load(tmp_path: Path) -> None:
     path = _write(
         tmp_path,

@@ -34,7 +34,14 @@ from researcher_agent.models import (
     RawItem,
     SourceRun,
 )
-from researcher_agent.normalize import NormalizeError, normalize_rss
+from researcher_agent.normalize import (
+    NormalizeError,
+    normalize_arxiv,
+    normalize_github_release,
+    normalize_github_repo,
+    normalize_hn,
+    normalize_rss,
+)
 from researcher_agent.prompts import classifier_version, load_prompt, render_system_prompt
 from researcher_agent.sources.base import SourceAdapter
 from researcher_agent.state import Database
@@ -93,12 +100,22 @@ class CollectStats:
         return self.error_count > 0
 
 
+_NORMALIZERS = {
+    "rss": normalize_rss,
+    "arxiv": normalize_arxiv,
+    "hn_search": normalize_hn,
+    "github_releases": normalize_github_release,
+    "github_topic": normalize_github_repo,
+}
+
+
 def _normalize(
     raw: RawItem, *, now: datetime, extra_tracking_params: tuple[str, ...]
 ) -> tuple[Item, list[ItemEntity]]:
-    if raw.source_type == "rss":
-        return normalize_rss(raw, now=now, extra_tracking_params=extra_tracking_params)
-    raise NormalizeError(f"no normalizer for source_type {raw.source_type!r}")
+    normalizer = _NORMALIZERS.get(raw.source_type)
+    if normalizer is None:
+        raise NormalizeError(f"no normalizer for source_type {raw.source_type!r}")
+    return normalizer(raw, now=now, extra_tracking_params=extra_tracking_params)
 
 
 def _in_window(

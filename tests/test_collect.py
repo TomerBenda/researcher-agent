@@ -231,15 +231,38 @@ def test_item_without_link_is_skipped_not_fatal(db: Database) -> None:
     assert stats.outcomes[0].skipped == 1
 
 
+def test_dispatch_normalizes_non_rss_source(db: Database) -> None:
+    # a non-RSS source_type must route to its own normalizer (here: hn_search)
+    hn_raw = RawItem(
+        source_name="hn:mcp",
+        source_type="hn_search",
+        external_id="42",
+        payload={
+            "title": "MCP discussion",
+            "link": "https://news.ycombinator.com/item?id=42",
+            "published_timestamp": int(NOW.timestamp()),
+        },
+        fetched_at=NOW,
+    )
+    adapter = FakeAdapter("hn:mcp", result=FetchResult(raw_items=[hn_raw], cursor={}))
+    with _feed_client() as client:
+        stats = run_collect(db, [adapter], client, now=NOW)
+    assert stats.total_new_items == 1
+    items = db.list_recent_items(datetime(2026, 1, 1, tzinfo=UTC))
+    assert items[0].url == "https://news.ycombinator.com/item?id=42"
+
+
 def test_unexpected_normalize_error_is_contained(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # defense in depth: even an unforeseen (non-NormalizeError) failure during
     # normalization must be contained per-item, never crashing the whole run
+    import researcher_agent.collect as collect_mod
+
     def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("unexpected parser explosion")
 
-    monkeypatch.setattr("researcher_agent.collect.normalize_rss", boom)
+    monkeypatch.setitem(collect_mod._NORMALIZERS, "rss", boom)
     result = FetchResult(raw_items=[_raw("https://example.com/x")], cursor={})
     adapter = FakeAdapter("rss:fake", result=result)
     with _feed_client() as client:

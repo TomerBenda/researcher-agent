@@ -9,7 +9,12 @@ import pytest
 
 from researcher_agent.canonicalize import canonical_hash
 from researcher_agent.models import RawItem
-from researcher_agent.normalize import NormalizeError, normalize_rss
+from researcher_agent.normalize import (
+    NormalizeError,
+    normalize_arxiv,
+    normalize_hn,
+    normalize_rss,
+)
 
 NOW = datetime(2026, 5, 28, 12, 0, 0, tzinfo=UTC)
 PUB = datetime(2026, 5, 27, 10, 0, 0, tzinfo=UTC)
@@ -183,6 +188,60 @@ def test_html_in_summary_does_not_create_bogus_entities() -> None:
     kinds_values = {(e.kind, e.value) for e in entities}
     assert ("cve", "CVE-2026-7777") in kinds_values
     assert ("repo", "post/body") not in kinds_values
+
+
+def test_normalize_arxiv_canonicalizes_to_abs() -> None:
+    raw = RawItem(
+        source_name="arxiv:x",
+        source_type="arxiv",
+        external_id="http://arxiv.org/abs/2505.12345v2",
+        payload={
+            "link": "http://arxiv.org/pdf/2505.12345v2",
+            "title": "A Paper on CVE-2025-0001",
+            "summary": "Abstract mentioning npm:evil-pkg.",
+            "published_timestamp": int(PUB.timestamp()),
+            "authors": ["Alice"],
+            "tags": ["cs.CR"],
+        },
+        fetched_at=NOW,
+    )
+    item, entities = normalize_arxiv(raw, now=NOW)
+    assert item.url == "https://arxiv.org/abs/2505.12345"
+    assert item.published_at == PUB
+    assert item.metadata["authors"] == ["Alice"]
+    got = {(e.kind, e.value) for e in entities}
+    assert ("cve", "CVE-2025-0001") in got
+    assert ("package", "npm:evil-pkg") in got
+
+
+def test_normalize_hn_uses_link_and_metadata() -> None:
+    raw = RawItem(
+        source_name="hn:mcp",
+        source_type="hn_search",
+        external_id="222",
+        payload={
+            "title": "Ask HN: securing MCP",
+            "link": "https://news.ycombinator.com/item?id=222",
+            "hn_url": "https://news.ycombinator.com/item?id=222",
+            "story_text": "About CVE-2025-7777.",
+            "author": "bob",
+            "points": 5,
+            "published_timestamp": int(PUB.timestamp()),
+        },
+        fetched_at=NOW,
+    )
+    item, entities = normalize_hn(raw, now=NOW)
+    assert item.url == "https://news.ycombinator.com/item?id=222"
+    assert item.metadata["author"] == "bob"
+    assert item.metadata["points"] == 5
+    assert ("cve", "CVE-2025-7777") in {(e.kind, e.value) for e in entities}
+
+
+def test_oversized_summary_is_truncated() -> None:
+    raw = _raw({"title": "t", "link": "https://example.com/x", "summary": "x" * 50_000})
+    item, _ = normalize_rss(raw, now=NOW)
+    assert item.summary is not None
+    assert len(item.summary) <= 4_000
 
 
 def test_content_feeds_entity_extraction() -> None:

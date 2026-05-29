@@ -17,12 +17,19 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from researcher_agent.sources.arxiv import ArxivAdapter, ArxivConfig
 from researcher_agent.sources.base import (
     FetchResult,
     SourceAdapter,
     SourceConfig,
     SourceConfigError,
 )
+from researcher_agent.sources.github_releases import (
+    GithubReleasesAdapter,
+    GithubReleasesConfig,
+)
+from researcher_agent.sources.github_topic import GithubTopicAdapter, GithubTopicConfig
+from researcher_agent.sources.hn_search import HnSearchAdapter, HnSearchConfig
 from researcher_agent.sources.rss import RssAdapter, RssConfig
 
 __all__ = [
@@ -35,6 +42,10 @@ __all__ = [
 
 _ADAPTERS: dict[str, tuple[type[SourceConfig], Callable[[Any], SourceAdapter]]] = {
     "rss": (RssConfig, RssAdapter),
+    "arxiv": (ArxivConfig, ArxivAdapter),
+    "hn_search": (HnSearchConfig, HnSearchAdapter),
+    "github_releases": (GithubReleasesConfig, GithubReleasesAdapter),
+    "github_topic": (GithubTopicConfig, GithubTopicAdapter),
 }
 
 
