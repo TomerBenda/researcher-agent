@@ -13,9 +13,10 @@ env:
   RESEARCHER_LOG_MODE: production
 
 # Never let two runs race the `state` branch; queue rather than cancel so an
-# in-flight collection finishes and commits before the next starts.
+# in-flight collection finishes and commits before the next starts. Shared with
+# the weekly synthesize workflow so collect and synthesize also serialize.
 concurrency:
-  group: collect-state
+  group: state-branch
   cancel-in-progress: false
 
 permissions:

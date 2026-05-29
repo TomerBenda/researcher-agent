@@ -6,6 +6,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (M5 — synthesis agent + tools)
+- `researcher synthesize` is now real (was a stub): it reads the window's classified items, runs a bounded tool-using LLM agent over them, and renders a synthesis report.
+  - **Tools** (`synthesis/tools.py`), each returning a structured `{ok, result|error}` dict and never raising into the loop: `query_items`, `fetch_url` (HTML-stripped, bounded, cached in `item_bodies` for known items), `get_entities` (reads normalize-time entities — invariant #4, the agent never invents them), `add_followup` (snapshotted), `finish`. Plus `tool_specs()` + `dispatch()`.
+  - **Agent loop** (`synthesis/agent.py`): provider-agnostic normalized message/reply types so the loop owns the conversation and the stopping rules. Stops on `finish()`, the turn limit, the token budget, or a provider error — every non-clean stop yields a *degraded* roundup (a marked note + the model's last prose) so an unattended run always writes something.
+  - **Providers** (`synthesis/providers.py`): Anthropic primary (`anthropic` SDK) + Gemini fallback (`google-genai` function calling), behind a fake-testable seam; `build_synthesis_provider()` prefers Anthropic, falls back to Gemini, else `ProviderError`. (Synthesis providers live in `synthesis/`, not `llm/`, to keep the package cohesive; the classifier providers stay in `llm/`.)
+  - **Orchestration** (`synthesis/run.py`): loads the window, runs the agent, derives the week's `WeeklyEntity` roll-up deterministically from stored `ItemEntity`s (normalizing `week_starting` to the ISO-week Monday so any window satisfies the model validator), persists outputs, and renders to the vault. New `Database.list_items_in_window`.
+  - **Prompt-as-file** `prompts/synthesize.md` (hashed at load like the classifier prompt).
+  - **Weekly cron** `.github/workflows/synthesize.yml`: restores `state.db`, synthesizes (only if `ANTHROPIC_API_KEY`/`GEMINI_API_KEY` is set, else a clean skip), and persists `state.db` back to the `state` branch using the same hardened logic as collect; both workflows share one `state-branch` concurrency group so they never race.
+- Test suite grew to 421 (no new dependencies; `anthropic` was already declared). The real provider paths are exercised only against the live APIs (like the classifier's golden eval); all loop/tool/orchestration tests use a fake provider + MockTransport.
+
 ### Fixed / hardened (post-M4 review remediation)
 - **Daily-collect cron now actually persists state (was failing every run).** The first real run surfaced a fatal bug — and reproducing it locally (with the runner's no-global-identity condition) uncovered a second latent one:
   1. `git config user.name/email` was set on the *outer* main checkout, but the commit runs inside a freshly `git init`'d `_publish` clone with no identity — so `git commit` died with `Author identity unknown / Please tell me who you are`. Because the commit never succeeded, the `state` branch was never created, so the restore step also failed ("couldn't find ref `state`") on every run — one bug, both red steps. Identity is now set inside the `_publish` repo where the commit runs.

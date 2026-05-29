@@ -1,0 +1,142 @@
+name: Synthesize (weekly)
+
+# Runs the synthesis agent once a week over the trailing 7 days, then persists the
+# updated SQLite state (followups + weekly entities + fetched bodies) back to the
+# dedicated `state` branch. Publishing the rendered report to the inbox repo is a
+# separate flow; here it renders to an ephemeral dir.
+on:
+  schedule:
+    - cron: "23 7 * * 0" # 07:23 UTC on Sundays
+  workflow_dispatch:
+
+env:
+  RESEARCHER_LOG_MODE: production
+
+# Shared with the daily collect workflow so the two never race the `state` branch.
+concurrency:
+  group: state-branch
+  cancel-in-progress: false
+
+permissions:
+  contents: write # to push the state branch
+
+jobs:
+  synthesize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code (main)
+        uses: actions/checkout@v4
+
+      - name: Restore prior state.db from the `state` branch (if it exists)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH="AUTHORIZATION: bearer ${GH_TOKEN}"
+          REMOTE="https://github.com/${{ github.repository }}.git"
+          rm -rf _state && mkdir _state && cd _state
+          git init -q
+          git remote add origin "$REMOTE"
+          if git -c http.extraheader="$AUTH" fetch -q --depth 1 origin state; then
+            git checkout -q FETCH_HEAD
+            echo "fetched prior state from the state branch"
+          else
+            echo "no state branch yet — nothing to synthesize over"
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Seed state.db from the restored branch
+        # Synthesis needs an existing store. If there's no (valid) state.db yet,
+        # exit cleanly — there's nothing to synthesize, and a missing DB is not a
+        # failure on a fresh repo.
+        run: |
+          mkdir -p .researcher
+          if [ -f _state/state.db ]; then
+            cp _state/state.db .researcher/state.db
+            if uv run python -c "import sys; from researcher_agent.state import Database; \
+              d = Database('.researcher/state.db'); ok = d.integrity_check(); d.close(); \
+              sys.exit(0 if ok else 1)"; then
+              echo "restored prior state.db (integrity ok)"
+            else
+              echo "::error::restored state.db failed integrity check"
+              exit 1
+            fi
+          else
+            echo "no state.db yet — nothing to synthesize; exiting"
+            exit 0
+          fi
+
+      - name: Synthesize
+        # Runs only if a synthesis key is set; otherwise synthesize exits 0 with a
+        # skip notice. Anthropic is preferred; Gemini is the fallback.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp config/agent.example.yaml config/agent.yaml
+          uv run researcher synthesize --db .researcher/state.db --vault _vault
+
+      - name: Checkpoint WAL then verify the file we will commit
+        run: |
+          uv run python -c "import sys; from researcher_agent.state import Database; \
+            db = Database('.researcher/state.db'); db.checkpoint(); \
+            ok = db.integrity_check(); db.close(); sys.exit(0 if ok else 1)"
+
+      - name: Commit state.db to the `state` branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH="AUTHORIZATION: bearer ${GH_TOKEN}"
+          REMOTE="https://github.com/${{ github.repository }}.git"
+          # Retry fetch->commit->push: re-fetch and re-apply our state.db if a
+          # concurrent writer advanced `state` (last-writer-wins is correct for a
+          # single fully-replacing blob; anything missed is re-collected next run).
+          pushed=0
+          for attempt in 1 2 3; do
+            rm -rf _publish && mkdir _publish && cd _publish
+            git init -q
+            # Identity must be set on THIS repo (the one that commits), not the
+            # outer checkout, or `git commit` fails "Author identity unknown".
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git remote add origin "$REMOTE"
+            if git -c http.extraheader="$AUTH" fetch -q origin state; then
+              git checkout -q -b state FETCH_HEAD
+            else
+              git checkout -q --orphan state
+            fi
+            cp ../.researcher/state.db state.db
+            # Ignore the SQLite WAL sidecars (not state.db itself).
+            printf 'state.db-wal\nstate.db-shm\nstate.db-journal\n' > .gitignore
+            git add state.db .gitignore
+            if git diff --cached --quiet; then
+              echo "no state change to commit"
+              pushed=1; cd ..; break
+            fi
+            git commit -q -m "state: synthesize $(date -u +%Y-%m-%dT%H:%MZ)"
+            if git -c http.extraheader="$AUTH" push -q origin state; then
+              echo "pushed state (attempt $attempt)"
+              pushed=1; cd ..; break
+            fi
+            echo "::warning::state push rejected (attempt $attempt) — re-fetching and retrying"
+            cd ..
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "::error::failed to push state.db after retries"
+            exit 1
+          fi

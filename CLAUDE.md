@@ -39,10 +39,11 @@ Constraints worth memorizing:
 | Dedupe | `researcher_agent/dedupe.py` | `find_duplicates` — entity-overlap + fuzzy title/window. Pure; conservative. |
 | Collect | `researcher_agent/collect.py` | `run_collect` (fetch/store) + `post_process` (classify→dedupe→render). Per-source error isolation. |
 | Vault writer | `researcher_agent/vault.py` | Renders collection + synthesis reports. Pure functions; atomic writes. |
-| CLI | `researcher_agent/__main__.py` | Typer; `collect` (full pipeline), `status`, `validate-config`, `synthesize` (stub through M5). |
+| CLI | `researcher_agent/__main__.py` | Typer; `collect` (full pipeline), `status`, `validate-config`, `synthesize` (M5 — tool-using agent over a window). Entry point is `main()` (redacts unhandled errors in production logs). |
+| Synthesis | `researcher_agent/synthesis/` | M5. `tools.py` (agent tools, `{ok,...}` shapes), `agent.py` (provider-agnostic loop + normalized types), `providers.py` (Anthropic primary + Gemini fallback), `run.py` (orchestration). Prompt: `prompts/synthesize.md`. |
 | Cron | `.github/workflows/collect.yml` | Daily collect; commits `state.db` to the `state` branch (checkpoint + integrity-check first). |
 | Golden set | `config/golden_set.jsonl` | 25 labeled items; `make test-golden` asserts ≥85% top-1 (opt-in, costs tokens). |
-| Tests | `tests/` | Unit + snapshot + golden. 345 after M4 (294 after M3, 198 after M2, 52 after M1); never let this drop silently. |
+| Tests | `tests/` | Unit + snapshot + golden. 421 after M5 (345 after M4, 294 after M3, 198 after M2, 52 after M1); never let this drop silently. |
 | Snapshots | `tests/snapshots/` | Vault rendering golden files. Regenerate with `UPDATE_SNAPSHOTS=1 pytest`. |
 | CI | `.github/workflows/ci.yml` | ruff + format-check + mypy --strict + pytest. |
 | state.db | **Not in this repo.** Will live on a dedicated `state` branch (regular commits, no force-push). | Adds full audit history; main stays clean. |
@@ -175,7 +176,7 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 
 ---
 
-## 6. Milestone M2 — COMPLETE (M3 + M4 also complete — see §7; next: M5)
+## 6. Milestone M2 — COMPLETE (M3, M4, M5 also complete — see §7; project is now operational)
 
 **Goal:** First source vertical slice + polite HTTP foundation + entity extraction. After M2, `researcher collect --since X --until Y` produces a real collection report (containing only RSS items, no classifier yet — classification lands in M3, so the reports show un-classified items with `topic="unclassified"` as a placeholder, OR M2 skips vault rendering and stops at the storage layer; pick whichever keeps M2 small).
 
@@ -252,12 +253,20 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 > - **Cron classifies only if `GEMINI_API_KEY` secret is set** (else skips cleanly) and renders to an ephemeral dir — publishing reports to the inbox repo is a separate flow (M5+). `state.db` (WAL) is checkpointed + integrity-checked before each commit to the `state` branch.
 > - **Live-validated:** GitHub/HN/RSS adapters collected 378 items end-to-end. arXiv's export API is externally flaky (429/timeout); collect isolates it per-source and retries next run (the polite client now backs off on a header-less 429). Deferred: per-host intervals, response-size streaming cap, GitHub Search 403 backoff — see CHANGELOG.
 
-### M5 — Synthesis agent + tools
+### M5 — Synthesis agent + tools — COMPLETE
 - Tools (each independently testable): `query_items`, `fetch_url` (with body cache check), `get_entities`, `add_followup`, `finish`. Tools return structured `{ok, result|error}` shapes — never raise into the agent loop.
 - Agent loop: Anthropic primary (via `anthropic` SDK), Gemini fallback. Token-budget accumulator, degraded-finish path on turn-limit/budget-exhaustion.
 - Prompt-as-file (`researcher_agent/prompts/synthesize.md`).
-- LLM response cache for development iteration (off in production).
-- `.github/workflows/synthesize.yml` runs weekly; commits synthesis report to `tbd-research-inbox`.
+- `.github/workflows/synthesize.yml` runs weekly.
+
+> **M5 resolution notes (decisions made during the build):**
+> - **Provider seam mirrors the classifier:** the loop (`synthesis/agent.py`) depends only on a `SynthesisProvider` protocol + normalized message/reply types and is fully tested with a fake provider; the real Anthropic/Gemini providers (`synthesis/providers.py`) are thin SDK translators, exercised only against the live APIs (like the golden eval). The loop owns the conversation, turn limit, token budget, and degraded-finish.
+> - **Synthesis providers live in `synthesis/`, not `llm/`** (deviating from §2's "providers in llm/"): keeps the synthesis package cohesive (loop + tools + providers + the contract) and avoids an `llm → synthesis` import for the normalized types. Classifier providers stay in `llm/`.
+> - **`get_entities`, not `extract_entities`** (spec §5.7 listed the latter): the agent *queries* normalize-time entities (invariant #4). `WeeklyEntity` rows are derived deterministically in `run.py` by rolling up the window items' stored `ItemEntity`s — the agent never invents entities. There is no `search_hn`/`extract_entities` tool.
+> - **`WeeklyEntity.week_starting`** is normalized to the ISO-week Monday of the window start, so a non-Monday `SynthesisWindow` (trailing-days / date-range) still satisfies the model's Monday-midnight validator.
+> - **LLM response cache (dev iteration):** NOT built — deferred. The `fetch_url` body cache (`item_bodies`) is the only cache; a full LLM-response cache for prompt iteration is a future nicety, not load-bearing.
+> - **Inbox publishing is still a separate flow:** `synthesize.yml` renders to an ephemeral dir and persists `state.db` (followups/entities/bodies) back to the `state` branch, sharing the `state-branch` concurrency group with collect. Committing the rendered report to the `tbd-research-inbox` repo (separate credentials) is left as the operational wiring step.
+> - **No `synthesis:` config section yet:** model/turns/min-score are CLI flags with sane defaults (`--max-turns 20`, `--min-score 5`; provider models default in `build_synthesis_provider`). Add a config section if these need to live in `agent.yaml`.
 
 After M5: project is operational. Iteration is config + prompt tuning, not new code.
 
