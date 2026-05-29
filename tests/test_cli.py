@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from researcher_agent.__main__ import _maybe_post_process, _parse_window_dt, app
+from researcher_agent.__main__ import (
+    _load_agent_config,
+    _maybe_post_process,
+    _parse_window_dt,
+    _safe_source_name,
+    app,
+)
+from researcher_agent.config import load_agent_config
 from researcher_agent.state import Database
 
 runner = CliRunner()
@@ -123,20 +130,28 @@ def _db(tmp_path: Path) -> Database:
     return Database(tmp_path / "state.db")
 
 
-def test_post_process_disabled_returns_none(tmp_path: Path) -> None:
-    db = _db(tmp_path)
-    out = _maybe_post_process(
-        db, now=datetime.now(UTC), agent_file=tmp_path / "agent.yaml", classify=False, vault=None
-    )
-    assert out is None
+def test_load_agent_config_missing_returns_none(tmp_path: Path) -> None:
+    assert _load_agent_config(tmp_path / "absent.yaml", warn_if_missing=False) is None
 
 
-def test_post_process_missing_agent_returns_none(tmp_path: Path) -> None:
+def test_load_agent_config_reads_file(tmp_path: Path) -> None:
+    agent = tmp_path / "agent.yaml"
+    agent.write_text(AGENT_YAML, encoding="utf-8")
+    cfg = _load_agent_config(agent, warn_if_missing=False)
+    assert cfg is not None
+    assert cfg.taxonomy.slugs == {"tooling", "other"}
+
+
+def test_post_process_none_config_returns_none(tmp_path: Path) -> None:
     db = _db(tmp_path)
-    out = _maybe_post_process(
-        db, now=datetime.now(UTC), agent_file=tmp_path / "absent.yaml", classify=True, vault=None
-    )
-    assert out is None
+    assert _maybe_post_process(db, config=None, now=datetime.now(UTC), vault=None) is None
+
+
+def test_safe_source_name_redacts_in_production() -> None:
+    assert _safe_source_name("rss:simon-willison", "dev") == "rss:simon-willison"
+    redacted = _safe_source_name("rss:simon-willison", "production")
+    assert "simon" not in redacted
+    assert redacted.startswith("src#")
 
 
 def test_post_process_no_api_key_returns_none(
@@ -145,8 +160,7 @@ def test_post_process_no_api_key_returns_none(
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     agent = tmp_path / "agent.yaml"
     agent.write_text(AGENT_YAML, encoding="utf-8")  # provider defaults to gemini
+    config = load_agent_config(agent)
     db = _db(tmp_path)
-    out = _maybe_post_process(
-        db, now=datetime.now(UTC), agent_file=agent, classify=True, vault=None
-    )
+    out = _maybe_post_process(db, config=config, now=datetime.now(UTC), vault=None)
     assert out is None  # gracefully skipped, no crash

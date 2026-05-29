@@ -6,6 +6,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed / hardened (post-M3 review remediation)
+- **Dead config wired up:** `classifier`-adjacent `tracking_params_to_strip` from `agent.yaml` is now actually threaded into URL canonicalization during `collect` (the CLI previously loaded it but never passed it to normalization).
+- **Honest source health:** added `source_runs.consecutive_error_runs` (migration `002`) so a failing/moved feed is distinguishable from a merely quiet one — `consecutive_empty_runs` no longer conflates a 304/quiet run with a dead source. (Feeds the M4 `status` command.)
+- **Public-log hygiene:** in production log mode the collect summary now hashes source names (the slugs reveal the private source list — invariant #20), matching the existing error-message redaction.
+- **State-branch prep:** `Database.checkpoint()` (`PRAGMA wal_checkpoint(TRUNCATE)`) and `integrity_check()` added, so M4's cron can flush the WAL and verify the DB before committing `state.db` to git.
+- Removed a misleading unused `now` parameter from `http._parse_retry_after`.
+
 ### Added (M3 — classifier + dedupe + golden set)
 - `researcher collect` now classifies, dedupes, and renders after storing — the full collect pipeline:
   - **LLM classifier** with provider abstraction: **Gemini** (`gemini-2.5-flash`, free tier) default, **Ollama** offline fallback. Providers are thin; the risky JSON-reply parsing is shared and unit-tested (`llm/base.py`, `llm/gemini.py`, `llm/ollama.py`, `llm/factory.py`).

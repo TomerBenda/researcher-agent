@@ -265,7 +265,7 @@ After M5: project is operational. Iteration is config + prompt tuning, not new c
 - **mypy cache I/O errors.** mypy's SQLite cache can fail on the mount. Pass `--cache-dir=/tmp/mypy-cache`.
 - **YAML frontmatter is alpha-sorted** by `sort_keys=True`. That's the contract — don't try to make it visually "nicer" at the cost of reproducibility.
 - **Snapshots are committed.** Don't regenerate them silently. Intentional rendering changes get an `UPDATE_SNAPSHOTS=1 pytest` run AND a CHANGELOG entry explaining the change.
-- **The `daily`/`weekly` framing is dead.** If you see those words in code, comments, or filenames, that's a regression. The framing is `collect`/`synthesize`, periodicity-agnostic.
+- **The `daily`/`weekly` framing is dead.** If you see those words in code, comments, or filenames, that's a regression. The framing is `collect`/`synthesize`, periodicity-agnostic. **Exception (blessed):** `WeeklyEntity` / `weekly_entities` name a genuinely *week-scoped* synthesis concept (entities surfaced for one ISO week), not a pipeline cadence — they are intentional, not the dead framing. Rename to `SynthesisEntity` only if synthesis later becomes window-agnostic.
 
 ---
 
@@ -294,3 +294,8 @@ make test-golden
 ## 10. When in doubt
 
 Read `docs/researcher-agent-spec.md` §1–3 and §10–13. Then re-read this CLAUDE.md §3. If the spec and the invariants conflict, the invariants win (they reflect the design-review pushback that happened after the spec was written). If you'd want to change an invariant, open a discussion with the user before any code.
+
+**The spec's data model (§3.2/§5.5) is superseded by the implemented normalized schema.** The M1 design review replaced the spec's flat shapes with: `Item` (no source fields) + `ItemSource` join + append-only `Classification` (not `ClassifiedItem`) + separate `item_bodies` + `WeeklyEntity.related_item_hashes` (not `related_item_ids`). Treat `models.py` / `migrations/` as canonical, not the spec's Python snippets.
+
+**Open carry-overs:**
+- **Golden set (M3):** `config/golden_set.jsonl` is 25 items; spec targets ≥50. The ≥85% top-1 assertion in `tests/test_golden.py` has not been run against a live key — run `make test-golden` with `GEMINI_API_KEY` set before trusting classifier accuracy, and grow the set toward 50.

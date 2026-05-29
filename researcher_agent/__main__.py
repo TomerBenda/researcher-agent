@@ -14,6 +14,7 @@ commands themselves are window-parameterized and idempotent.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ from pathlib import Path
 import typer
 
 from researcher_agent.collect import CollectStats, PostStats, post_process, run_collect
-from researcher_agent.config import ConfigError, load_agent_config
+from researcher_agent.config import AgentConfig, ConfigError, load_agent_config
 from researcher_agent.http import PoliteClient
 from researcher_agent.llm.base import ProviderError
 from researcher_agent.llm.factory import build_classifier_provider
@@ -41,15 +42,23 @@ def _parse_window_dt(value: str) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
-def _print_summary(stats: CollectStats) -> None:
+def _safe_source_name(name: str, log_mode: str) -> str:
+    """Source slugs reveal the (private) source list, so hash them in public CI logs."""
+    if log_mode != "production":
+        return name
+    return "src#" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+
+
+def _print_summary(stats: CollectStats, *, log_mode: str = "dev") -> None:
     for o in stats.outcomes:
+        name = _safe_source_name(o.name, log_mode)
         if o.error is not None:
-            typer.echo(f"  ERROR  {o.name}: {o.error}")
+            typer.echo(f"  ERROR  {name}: {o.error}")
         elif o.not_modified:
-            typer.echo(f"  304    {o.name}: not modified")
+            typer.echo(f"  304    {name}: not modified")
         else:
             typer.echo(
-                f"  ok     {o.name}: fetched={o.fetched} new={o.stored_new} "
+                f"  ok     {name}: fetched={o.fetched} new={o.stored_new} "
                 f"entities={o.entities_new} skipped={o.skipped}"
             )
     typer.echo(
@@ -58,27 +67,31 @@ def _print_summary(stats: CollectStats) -> None:
     )
 
 
+def _load_agent_config(agent_file: Path, *, warn_if_missing: bool) -> AgentConfig | None:
+    """Best-effort load of agent.yaml. Returns None (with a notice) if absent/invalid."""
+    if not agent_file.exists():
+        if warn_if_missing:
+            typer.echo(
+                f"classification off: {agent_file} not found "
+                "(copy config/agent.example.yaml, or pass --no-classify)"
+            )
+        return None
+    try:
+        return load_agent_config(agent_file)
+    except ConfigError as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        return None
+
+
 def _maybe_post_process(
     db: Database,
     *,
+    config: AgentConfig | None,
     now: datetime,
-    agent_file: Path,
-    classify: bool,
     vault: str | None,
 ) -> PostStats | None:
-    """Load config, build the provider, and run classify/dedupe/render — or skip."""
-    if not classify:
-        return None
-    if not agent_file.exists():
-        typer.echo(
-            f"skipping classification: {agent_file} not found "
-            "(copy config/agent.example.yaml, or pass --no-classify)"
-        )
-        return None
-    try:
-        config = load_agent_config(agent_file)
-    except ConfigError as exc:
-        typer.echo(f"skipping classification: {exc}", err=True)
+    """Build the provider and run classify/dedupe/render — or skip cleanly."""
+    if config is None:
         return None
     try:
         provider = build_classifier_provider(config.classifier)
@@ -158,6 +171,11 @@ def collect(
     log_mode = os.environ.get("RESEARCHER_LOG_MODE", "dev")
     now = datetime.now(UTC)
 
+    # Load agent config up front: its tracking params affect canonicalization
+    # during collection (before post-processing), and it drives classification.
+    config = _load_agent_config(agent_file, warn_if_missing=classify)
+    extra_tracking = config.tracking_params_to_strip if config else []
+
     post: PostStats | None = None
     with Database(db_path) as db, PoliteClient() as client:
         stats = run_collect(
@@ -167,13 +185,13 @@ def collect(
             now=now,
             since=since_dt,
             until=until_dt,
+            extra_tracking_params=extra_tracking,
             log_mode=log_mode,
         )
-        post = _maybe_post_process(
-            db, now=now, agent_file=agent_file, classify=classify, vault=vault
-        )
+        if classify:
+            post = _maybe_post_process(db, config=config, now=now, vault=vault)
 
-    _print_summary(stats)
+    _print_summary(stats, log_mode=log_mode)
     if post is not None:
         _print_post_summary(post)
     if fail_on_error and stats.any_errors:

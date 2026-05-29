@@ -109,6 +109,20 @@ class Database:
         self.conn = _connect(self.path)
         _apply_migrations(self.conn, migrations_dir or MIGRATIONS_DIR)
 
+    def checkpoint(self) -> None:
+        """Flush the WAL into the main db file and truncate it.
+
+        Must be run before committing `state.db` to git: in WAL mode recent
+        writes live in the `-wal` sidecar (which is gitignored), so without a
+        checkpoint the committed main file would be stale/torn.
+        """
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def integrity_check(self) -> bool:
+        """Return True iff SQLite reports the database is well-formed."""
+        row = self.conn.execute("PRAGMA integrity_check").fetchone()
+        return row is not None and row[0] == "ok"
+
     def close(self) -> None:
         self.conn.close()
 
@@ -364,6 +378,7 @@ class Database:
             last_success_at=_from_iso(row["last_success_at"]),
             last_error=row["last_error"],
             consecutive_empty_runs=row["consecutive_empty_runs"],
+            consecutive_error_runs=row["consecutive_error_runs"],
         )
 
     def upsert_source_run(self, run: SourceRun) -> None:
@@ -371,14 +386,15 @@ class Database:
             """
             INSERT INTO source_runs
                 (source_name, cursor_json, last_run_at, last_success_at, last_error,
-                 consecutive_empty_runs)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 consecutive_empty_runs, consecutive_error_runs)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_name) DO UPDATE SET
                 cursor_json = excluded.cursor_json,
                 last_run_at = excluded.last_run_at,
                 last_success_at = excluded.last_success_at,
                 last_error = excluded.last_error,
-                consecutive_empty_runs = excluded.consecutive_empty_runs
+                consecutive_empty_runs = excluded.consecutive_empty_runs,
+                consecutive_error_runs = excluded.consecutive_error_runs
             """,
             (
                 run.source_name,
@@ -387,6 +403,7 @@ class Database:
                 _iso(run.last_success_at),
                 run.last_error,
                 run.consecutive_empty_runs,
+                run.consecutive_error_runs,
             ),
         )
 

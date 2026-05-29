@@ -159,6 +159,33 @@ def test_source_error_is_isolated(db: Database) -> None:
     assert run.last_error is not None
 
 
+def test_error_increments_error_counter_not_empty(db: Database) -> None:
+    bad = FakeAdapter("rss:bad", exc=RuntimeError("boom"))
+    with _feed_client() as client:
+        run_collect(db, [bad], client, now=NOW)
+        run_collect(db, [bad], client, now=NOW)
+    run = db.get_source_run("rss:bad")
+    assert run is not None
+    assert run.consecutive_error_runs == 2
+    assert run.consecutive_empty_runs == 0  # an error is not counted as "empty"
+
+
+def test_success_clears_error_counter(db: Database) -> None:
+    flaky_then_ok = [
+        FakeAdapter("rss:s", exc=RuntimeError("boom")),
+        FakeAdapter(
+            "rss:s", result=FetchResult(raw_items=[_raw("https://example.com/x")], cursor={})
+        ),
+    ]
+    with _feed_client() as client:
+        run_collect(db, [flaky_then_ok[0]], client, now=NOW)
+        assert db.get_source_run("rss:s").consecutive_error_runs == 1  # type: ignore[union-attr]
+        run_collect(db, [flaky_then_ok[1]], client, now=NOW)
+    run = db.get_source_run("rss:s")
+    assert run is not None
+    assert run.consecutive_error_runs == 0  # cleared on success
+
+
 def test_error_redacted_in_production_mode(db: Database) -> None:
     # production mode must drop the message body entirely: DNS/connect/SSL errors
     # embed the bare private host, not just full URLs, so substring stripping is
@@ -243,6 +270,17 @@ def test_until_filters_future_items(db: Database) -> None:
         stats = run_collect(db, [adapter], client, now=NOW, until=datetime(2026, 6, 1, tzinfo=UTC))
     assert stats.total_new_items == 1
     assert db.get_item(_hash("https://example.com/in")) is not None
+
+
+def test_extra_tracking_params_reach_normalization(db: Database) -> None:
+    # config-supplied tracking params must actually be stripped during collect
+    raw = _raw("https://example.com/x?sid=1&keep=2")
+    adapter = FakeAdapter("rss:fake", result=FetchResult(raw_items=[raw], cursor={}))
+    with _feed_client() as client:
+        run_collect(db, [adapter], client, now=NOW, extra_tracking_params=["sid"])
+    items = db.list_recent_items(datetime(2026, 1, 1, tzinfo=UTC))
+    assert len(items) == 1
+    assert items[0].url == "https://example.com/x?keep=2"
 
 
 def test_undated_items_survive_since_filter(db: Database) -> None:

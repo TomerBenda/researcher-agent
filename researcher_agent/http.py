@@ -23,12 +23,12 @@ import httpx
 DEFAULT_USER_AGENT = "researcher-agent/0.1 (+https://github.com/TomerBenda/researcher-agent)"
 
 
-def _parse_retry_after(value: str | None, *, now: float) -> float | None:
+def _parse_retry_after(value: str | None) -> float | None:
     """Parse a Retry-After header into seconds-to-wait, or None if absent/invalid.
 
-    Accepts both the integer-seconds form and the HTTP-date form. `now` is the
-    current monotonic time used to compute the delta for date forms (the date is
-    compared against wall-clock, then floored at 0).
+    Accepts both the integer-seconds form and the HTTP-date form. The date form
+    is compared against the wall clock (`time.time`) and floored at 0; callers
+    clamp the result to a sane maximum.
     """
     if value is None:
         return None
@@ -41,8 +41,7 @@ def _parse_retry_after(value: str | None, *, now: float) -> float | None:
         when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
-    delta = when.timestamp() - time.time()
-    return max(0.0, delta)
+    return max(0.0, when.timestamp() - time.time())
 
 
 class PoliteClient:
@@ -113,9 +112,7 @@ class PoliteClient:
                 response = self._client.get(url, headers=dict(headers) if headers else None)
 
                 if response.status_code == 429 and attempts < self._max_retries:
-                    wait = _parse_retry_after(
-                        response.headers.get("Retry-After"), now=self._clock()
-                    )
+                    wait = _parse_retry_after(response.headers.get("Retry-After"))
                     # Give up (return the 429) rather than retry if there is no
                     # Retry-After or it asks for an unreasonably long wait — a
                     # broken/hostile server must not stall the whole serial run.

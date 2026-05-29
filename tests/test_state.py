@@ -71,9 +71,20 @@ def test_migrations_apply_to_empty_db(tmp_path: Path) -> None:
     Database(tmp_path / "x.db")
     # second open should be no-op
     db = Database(tmp_path / "x.db")
-    rows = db.conn.execute("SELECT filename FROM schema_migrations").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["filename"] == "001_initial.sql"
+    rows = db.conn.execute("SELECT filename FROM schema_migrations ORDER BY filename").fetchall()
+    names = [r["filename"] for r in rows]
+    assert names == ["001_initial.sql", "002_source_run_error_counter.sql"]
+
+
+def test_integrity_check_ok_on_fresh_db(db: Database) -> None:
+    assert db.integrity_check() is True
+
+
+def test_checkpoint_runs_and_db_still_usable(db: Database) -> None:
+    db.insert_item(_make_item())
+    db.checkpoint()  # must not raise
+    assert db.get_item(HASH) is not None
+    assert db.integrity_check() is True
 
 
 def test_wal_mode_and_fk_enabled(db: Database) -> None:

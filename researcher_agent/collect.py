@@ -127,6 +127,7 @@ def _collect_one(
     run = db.get_source_run(name)
     cursor = dict(run.cursor) if run else {}
     prev_empty = run.consecutive_empty_runs if run else 0
+    prev_error = run.consecutive_error_runs if run else 0
     prev_success = run.last_success_at if run else None
 
     try:
@@ -140,7 +141,8 @@ def _collect_one(
                 last_run_at=now,
                 last_success_at=prev_success,
                 last_error=error,
-                consecutive_empty_runs=prev_empty,
+                consecutive_empty_runs=prev_empty,  # unchanged: an error is not "empty"
+                consecutive_error_runs=prev_error + 1,
             )
         )
         return SourceOutcome(name=name, error=error)
@@ -182,6 +184,7 @@ def _collect_one(
             last_success_at=now,
             last_error=None,
             consecutive_empty_runs=prev_empty + 1 if produced_nothing else 0,
+            consecutive_error_runs=0,  # a successful fetch clears the error streak
         )
     )
     return SourceOutcome(

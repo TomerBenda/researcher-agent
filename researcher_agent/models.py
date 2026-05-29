@@ -248,7 +248,8 @@ class SourceRun(BaseModel):
     last_run_at: datetime | None = None
     last_success_at: datetime | None = None
     last_error: str | None = None
-    consecutive_empty_runs: int = 0
+    consecutive_empty_runs: int = 0  # runs that returned no NEW items (incl. 304 / quiet)
+    consecutive_error_runs: int = 0  # consecutive failed fetches (the health signal)
 
     @field_validator("last_run_at", "last_success_at")
     @classmethod

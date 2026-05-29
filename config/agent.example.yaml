@@ -14,7 +14,7 @@ research_focus: |
   supply-chain attacks, agentic coding/browser tools, and prompt injection.
 
 classifier:
-  provider: gemini          # gemini | ollama | anthropic
+  provider: gemini          # gemini | ollama  (anthropic is reserved for M5 synthesis)
   model: gemini-2.5-flash   # free tier on Google AI Studio
   batch_size: 10
   temperature: 0.2
