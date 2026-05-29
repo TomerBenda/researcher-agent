@@ -38,7 +38,8 @@ class ToolUseBlock:
 
 @dataclass(frozen=True)
 class ToolResultBlock:
-    tool_use_id: str
+    tool_use_id: str  # matches the originating ToolUseBlock.id (Anthropic keys on this)
+    name: str  # the tool name (Gemini keys function responses on the name)
     content: str  # JSON-encoded tool result
 
 
@@ -175,9 +176,7 @@ def run_agent(
             # The model stopped talking without calling finish — treat its text as
             # an implicit (degraded) roundup unless it already recorded one.
             if tools.finished_roundup is not None:
-                return AgentOutcome(
-                    tools.finished_roundup, "finish", turn, usage, degraded=False
-                )
+                return AgentOutcome(tools.finished_roundup, "finish", turn, usage, degraded=False)
             return AgentOutcome(
                 _degraded_roundup(last_text, "end_turn"), "end_turn", turn, usage, degraded=True
             )
@@ -186,7 +185,9 @@ def run_agent(
         result_blocks: list[Block] = []
         for tc in reply.tool_calls:
             result = tools.dispatch(tc.name, tc.arguments)
-            result_blocks.append(ToolResultBlock(tc.id, json.dumps(result, ensure_ascii=False)))
+            result_blocks.append(
+                ToolResultBlock(tc.id, tc.name, json.dumps(result, ensure_ascii=False))
+            )
         messages.append(AgentMessage("user", result_blocks))
 
         if tools.finished_roundup is not None:
