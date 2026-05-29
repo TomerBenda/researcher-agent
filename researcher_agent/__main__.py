@@ -31,7 +31,10 @@ from researcher_agent.llm.factory import build_classifier_provider
 from researcher_agent.sources import SourceConfigError, load_adapters
 from researcher_agent.state import Database
 
-app = typer.Typer(help="researcher-agent CLI")
+# pretty_exceptions disabled so an unexpected error propagates to `main()`'s
+# redaction guard instead of Typer printing a rich traceback (which can embed a
+# private feed URL/host) to the public CI log.
+app = typer.Typer(help="researcher-agent CLI", pretty_exceptions_enable=False)
 
 DEFAULT_SOURCES = Path("config/sources.yaml")
 DEFAULT_AGENT = Path("config/agent.yaml")
@@ -322,5 +325,27 @@ def synthesize(
     raise typer.Exit(code=1)
 
 
+def main() -> None:
+    """CLI entry point that redacts unexpected errors in production log mode.
+
+    A traceback from an unhandled exception can embed a private feed URL or
+    hostname (e.g. an httpx error during post-processing), which would leak into
+    the public Actions log. In production mode we drop the message body and emit
+    only the exception class plus a short correlation hash — matching collect's
+    per-source error redaction (invariant #21). typer.Exit / Abort (which Click
+    turns into SystemExit) pass through unchanged.
+    """
+    try:
+        app()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        if os.environ.get("RESEARCHER_LOG_MODE") == "production":
+            digest = hashlib.sha256(f"{type(exc).__name__}: {exc}".encode()).hexdigest()[:8]
+            typer.echo(f"fatal: {type(exc).__name__} (redacted msg#{digest})", err=True)
+            raise SystemExit(1) from None
+        raise
+
+
 if __name__ == "__main__":
-    app()
+    main()

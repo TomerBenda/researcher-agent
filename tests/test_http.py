@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from researcher_agent.http import DEFAULT_USER_AGENT, PoliteClient
+from researcher_agent.http import DEFAULT_USER_AGENT, PoliteClient, ResponseTooLargeError
 
 
 class FakeClock:
@@ -282,6 +282,52 @@ def test_elapsed_time_counts_against_interval() -> None:
 
     # 3s already elapsed during the first request, so only 2s more is needed.
     assert clock.sleeps == [2.0]
+
+
+# --- response-size cap ---------------------------------------------------------
+
+
+def test_oversized_response_body_is_rejected() -> None:
+    # A hostile/compromised feed must not be able to exhaust memory in the
+    # unattended cron with a huge (or decompression-bomb) body.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 5000)
+
+    with _client(handler, max_response_bytes=1000) as c, pytest.raises(ResponseTooLargeError):
+        c.get("https://example.com/huge")
+
+
+def test_body_under_cap_is_returned_intact() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"hello": "world"})
+
+    with _client(handler, max_response_bytes=10_000) as c:
+        resp = c.get("https://example.com/ok")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"hello": "world"}
+
+
+def test_cap_none_disables_the_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 5000)
+
+    with _client(handler, max_response_bytes=None) as c:
+        resp = c.get("https://example.com/big")
+
+    assert len(resp.content) == 5000
+
+
+def test_etag_headers_survive_the_size_cap() -> None:
+    # The cap path must preserve response headers adapters rely on (ETag etc.).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"feed", headers={"ETag": '"v1"'})
+
+    with _client(handler, max_response_bytes=10_000) as c:
+        resp = c.get("https://example.com/feed")
+
+    assert resp.headers["ETag"] == '"v1"'
+    assert resp.content == b"feed"
 
 
 def test_get_raises_for_invalid_scheme() -> None:

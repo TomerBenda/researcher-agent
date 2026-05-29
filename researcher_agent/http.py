@@ -22,6 +22,14 @@ import httpx
 
 DEFAULT_USER_AGENT = "researcher-agent/0.1 (+https://github.com/TomerBenda/researcher-agent)"
 
+# 10 MiB. Feeds/API responses are a few hundred KB at most; this is generous
+# headroom that still stops a hostile/compromised source from exhausting memory.
+DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+
+
+class ResponseTooLargeError(Exception):
+    """Raised when a response body exceeds the configured size cap."""
+
 
 def _parse_retry_after(value: str | None) -> float | None:
     """Parse a Retry-After header into seconds-to-wait, or None if absent/invalid.
@@ -56,6 +64,7 @@ class PoliteClient:
         max_retry_after_seconds: float = 60.0,
         default_retry_after_seconds: float = 2.0,
         timeout: float = 20.0,
+        max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -71,6 +80,7 @@ class PoliteClient:
         self._max_retries = max_retries
         self._max_retry_after = max_retry_after_seconds
         self._default_retry_after = default_retry_after_seconds
+        self._max_response_bytes = max_response_bytes
         self._sleep = sleep
         self._clock = clock
         self._last_request_at: dict[str, float] = {}
@@ -111,7 +121,12 @@ class PoliteClient:
                 # Record the start time so a slow request counts against the
                 # interval (rate-limit on request starts, not a fixed cooldown).
                 self._last_request_at[host] = self._clock()
-                response = self._client.get(url, headers=dict(headers) if headers else None)
+                # Stream so the body-size cap can abort before a huge or
+                # decompression-bomb response is fully downloaded into memory.
+                request = self._client.build_request(
+                    "GET", url, headers=dict(headers) if headers else None
+                )
+                response = self._client.send(request, stream=True)
 
                 if response.status_code == 429 and attempts < self._max_retries:
                     wait = _parse_retry_after(response.headers.get("Retry-After"))
@@ -122,10 +137,46 @@ class PoliteClient:
                     # But never honor an unreasonably long wait — a broken/hostile
                     # server must not stall the whole serial run.
                     if wait <= self._max_retry_after:
+                        response.close()
                         self._sleep(wait)
                         attempts += 1
                         continue
-                return response
+                return self._read_capped(response)
+
+    def _read_capped(self, response: httpx.Response) -> httpx.Response:
+        """Read the streamed body into memory, aborting past the size cap.
+
+        `iter_bytes()` yields *decoded* bytes, so the cap applies to the
+        decompressed size — a small gzip that explodes to gigabytes is stopped
+        mid-stream. Returns a non-streaming response so callers can use
+        `.content` / `.json()` / `.raise_for_status()` normally.
+        """
+        if self._max_response_bytes is None:
+            response.read()
+            return response
+        total = 0
+        chunks: list[bytes] = []
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > self._max_response_bytes:
+                response.close()
+                raise ResponseTooLargeError(
+                    f"response body exceeded the {self._max_response_bytes}-byte cap"
+                )
+            chunks.append(chunk)
+        # Rebuild as a read response (we already decoded the body, so drop the
+        # content-encoding/length headers that would otherwise be inconsistent).
+        out_headers = httpx.Headers(response.headers)
+        out_headers.pop("content-encoding", None)
+        out_headers.pop("content-length", None)
+        capped = httpx.Response(
+            status_code=response.status_code,
+            headers=out_headers,
+            content=b"".join(chunks),
+            request=response.request,
+        )
+        response.close()
+        return capped
 
     def close(self) -> None:
         self._client.close()
