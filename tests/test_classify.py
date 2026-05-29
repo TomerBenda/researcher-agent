@@ -171,6 +171,25 @@ def test_budget_too_small_for_retry_falls_back() -> None:
     assert len(p.calls) == 1  # retry never attempted (no budget)
 
 
+def test_first_batch_runs_even_if_over_budget() -> None:
+    # A single batch whose estimate exceeds the WHOLE budget must still be
+    # attempted; otherwise the same items skip on every run and the pipeline
+    # wedges forever. Forward progress beats a permanent stall.
+    p = FakeProvider(_all_valid)
+    out = _run(p, _inputs(3), batch_size=10, token_budget=1, estimate=_const_estimate(100))
+    assert set(out.classifications) == {"0", "1", "2"}
+    assert out.skipped_ids == []
+
+
+def test_over_budget_first_batch_still_defers_later_batches() -> None:
+    # The forced first batch runs, but the budget still gates every later batch so
+    # one run can't blow far past the budget.
+    p = FakeProvider(_all_valid)
+    out = _run(p, _inputs(20), batch_size=10, token_budget=1, estimate=_const_estimate(100))
+    assert set(out.classifications) == {str(i) for i in range(10)}
+    assert out.skipped_ids == [str(i) for i in range(10, 20)]
+
+
 def test_no_budget_means_unlimited() -> None:
     p = FakeProvider(_all_valid)
     out = _run(p, _inputs(50), batch_size=10, token_budget=None)

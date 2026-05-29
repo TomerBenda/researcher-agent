@@ -124,11 +124,23 @@ def classify_inputs(
 
     batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
     aborted = False
+    attempted = False
     for idx, batch in enumerate(batches):
-        if aborted or not afford(estimate(system_prompt, batch)):
-            for later in batches[idx:]:
-                skipped_ids.extend(inp.id for inp in later)
+        if aborted:
+            skipped_ids.extend(inp.id for later in batches[idx:] for inp in later)
             break
+        if not afford(estimate(system_prompt, batch)):
+            if attempted:
+                # Budget exhausted after real work this run; defer the rest to a
+                # later run rather than overrunning.
+                skipped_ids.extend(inp.id for later in batches[idx:] for inp in later)
+                break
+            # First batch alone exceeds the whole run budget (a misconfig, or one
+            # huge item). Attempt it anyway so we make forward progress instead of
+            # skipping the same items on every run forever; zero the budget so
+            # every later batch is still gated.
+            remaining = 0
+        attempted = True
 
         raw, initial_err = _safe_classify(provider, system_prompt, batch, initial_temperature)
         note(initial_err)
