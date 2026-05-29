@@ -59,7 +59,16 @@ class GithubTopicAdapter:
 
         watermark = cursor.get("last_pushed_epoch")
         watermark = watermark if isinstance(watermark, int) else 0
+        # External ids already emitted *at* the watermark second. pushed_at is
+        # second-granular and bursty, so a strict `pushed <= watermark` skip would
+        # silently drop a genuinely-new repo pushed in the same second as the prior
+        # high-water repo. Track the boundary ids instead: skip only repos strictly
+        # older than the watermark, or at the watermark second but already seen.
+        seen_raw = cursor.get("seen_at_watermark")
+        seen_at_watermark = {str(x) for x in seen_raw} if isinstance(seen_raw, list) else set()
+
         new_watermark = watermark
+        emitted: list[tuple[str, int | None]] = []
         raw_items: list[RawItem] = []
         for repo in items:
             if not isinstance(repo, dict):
@@ -68,8 +77,11 @@ class GithubTopicAdapter:
             if not external:
                 continue
             pushed = iso_to_epoch(repo.get("pushed_at") or repo.get("updated_at"))
-            if pushed is not None and pushed <= watermark:
-                continue  # unchanged since last run
+            if pushed is not None:
+                if pushed < watermark:
+                    continue  # older than the high-water mark -> already seen
+                if pushed == watermark and external in seen_at_watermark:
+                    continue  # same second as a prior run and already emitted
             raw_items.append(
                 RawItem(
                     source_name=self.config.name,
@@ -79,9 +91,17 @@ class GithubTopicAdapter:
                     fetched_at=now,
                 )
             )
+            emitted.append((external, pushed))
             if pushed is not None:
                 new_watermark = max(new_watermark, pushed)
 
+        # Remember which ids sit on the (new) high-water second so a later run with
+        # more same-second repos still emits only the genuinely-new ones.
+        new_seen = {ext for ext, pushed in emitted if pushed == new_watermark}
+        if new_watermark == watermark:
+            new_seen |= seen_at_watermark
+
         new_cursor = dict(cursor)
         new_cursor["last_pushed_epoch"] = new_watermark
+        new_cursor["seen_at_watermark"] = sorted(new_seen)
         return FetchResult(raw_items=raw_items, cursor=new_cursor)

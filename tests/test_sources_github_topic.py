@@ -90,6 +90,37 @@ def test_watermark_skips_unchanged_repos() -> None:
     assert first.cursor["last_pushed_epoch"] == iso_to_epoch("2026-05-25T00:00:00Z")
 
 
+def test_same_second_new_repo_not_lost_at_watermark() -> None:
+    # The first run sets the watermark to repo 10's pushed_at (2026-05-25). A
+    # later run returns a genuinely-NEW repo (id 12) pushed in that SAME second.
+    # A strict `pushed <= watermark` skip would silently drop it; the boundary-id
+    # cursor must still emit 12 while not re-emitting the already-seen repo 10.
+    second_result = {
+        "items": [
+            RESULT["items"][0],  # id 10, pushed 2026-05-25 — already seen
+            {
+                "id": 12,
+                "full_name": "new/same-second-repo",
+                "html_url": "https://github.com/new/same-second-repo",
+                "description": "Pushed in the same second as the watermark.",
+                "stargazers_count": 50,
+                "pushed_at": "2026-05-25T00:00:00Z",
+            },
+        ]
+    }
+    bodies = iter([RESULT, second_result])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=json.dumps(next(bodies)).encode())
+
+    with _client(handler) as c:
+        adapter = _adapter()
+        first = adapter.fetch(c, {}, NOW)
+        second = adapter.fetch(c, first.cursor, NOW)
+    assert {r.external_id for r in first.raw_items} == {"10", "11"}
+    assert {r.external_id for r in second.raw_items} == {"12"}
+
+
 def test_server_error_raises() -> None:
     def boom(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403)

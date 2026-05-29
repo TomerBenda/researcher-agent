@@ -85,6 +85,50 @@ def test_external_id_and_payload() -> None:
     assert first.source_type == "arxiv"
 
 
+ERROR_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_query</id>
+    <title>Error</title>
+    <summary>incorrect id format for query</summary>
+    <link href="http://arxiv.org/api/errors#incorrect_id_format_for_query" rel="alternate"/>
+  </entry>
+</feed>
+"""
+
+MIXED_FEED = ATOM.replace(
+    "</feed>",
+    """  <entry>
+    <id>http://arxiv.org/api/errors#some_transient_problem</id>
+    <title>Error</title>
+    <link href="http://arxiv.org/api/errors#some_transient_problem" rel="alternate"/>
+  </entry>
+</feed>""",
+)
+
+
+def test_error_feed_yields_no_items() -> None:
+    # arXiv answers a bad query / transient fault with 200 + an error sentinel
+    # entry; it must not be stored/classified/rendered as a paper.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=ERROR_FEED.encode())
+
+    with _client(handler) as c:
+        result = _adapter().fetch(c, {}, NOW)
+    assert result.raw_items == []
+
+
+def test_error_entry_filtered_from_mixed_feed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=MIXED_FEED.encode())
+
+    with _client(handler) as c:
+        result = _adapter().fetch(c, {}, NOW)
+    # the two real papers survive; the trailing error entry is dropped
+    assert len(result.raw_items) == 2
+    assert all("errors" not in r.external_id for r in result.raw_items)
+
+
 def test_server_error_raises() -> None:
     def boom(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)

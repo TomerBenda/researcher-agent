@@ -60,6 +60,10 @@ class HnSearchAdapter:
         }
         watermark = cursor.get("last_created_at_i")
         if isinstance(watermark, int):
+            # Strict `>` is safe here (unlike the GitHub-topic pushed_at watermark):
+            # created_at_i is the immutable submission time and results come back
+            # newest-first, so any item sharing the watermark second was already in
+            # the same fetch as the watermark-setting item — never a later run.
             params["numericFilters"] = f"created_at_i>{watermark}"
 
         response = client.get(f"{self.BASE_URL}?{urlencode(params)}")
