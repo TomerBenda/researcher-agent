@@ -1,12 +1,13 @@
 """CLI entry point.
 
-Two functions over a shared substrate (SQLite store + vault):
-- `collect`  — gather from sources, normalize, store. Default window is "since
-  last run" (per-source cursors); explicit `--since`/`--until` windows are
-  accepted. For M2 this stops at the storage layer: classification and vault
-  rendering land with the classifier in M3.
-- `synthesize` — read items in a window, run the synthesis agent, write a
-  synthesis report. Still a stub through M5.
+Commands over a shared substrate (SQLite store + vault):
+- `collect` — gather from sources, normalize, store, then classify → dedupe →
+  render. Default window is "since last run" (per-source cursors); explicit
+  `--since`/`--until` windows are accepted. Classification is skipped cleanly
+  when no provider/API key is available.
+- `status` — per-source health + store totals (for unattended monitoring).
+- `validate-config` — check sources.yaml + agent.yaml without touching the network.
+- `synthesize` — run the synthesis agent over a window. Still a stub through M5.
 
 Periodicity is an orchestration concern (cron, GitHub Actions, manual). The
 commands themselves are window-parameterized and idempotent.
@@ -14,6 +15,7 @@ commands themselves are window-parameterized and idempotent.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 from datetime import UTC, datetime
@@ -190,12 +192,113 @@ def collect(
         )
         if classify:
             post = _maybe_post_process(db, config=config, now=now, vault=vault)
+        # Consolidate the WAL into the main db file so a subsequent commit of
+        # state.db to the `state` branch captures everything (sidecars are
+        # gitignored). Harmless for local runs.
+        db.checkpoint()
 
     _print_summary(stats, log_mode=log_mode)
     if post is not None:
         _print_post_summary(post)
     if fail_on_error and stats.any_errors:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def status(
+    sources_file: Path = typer.Option(DEFAULT_SOURCES, "--sources", help="Sources YAML file."),
+    db_path: Path = typer.Option(DEFAULT_DB, "--db", help="Path to the SQLite state DB."),
+    stale_days: int = typer.Option(3, help="Flag a source STALE if no success within N days."),
+    max_consecutive_errors: int = typer.Option(
+        0, help="Exit non-zero if any source has failed this many runs in a row (0 = never)."
+    ),
+) -> None:
+    """Report per-source health and store totals (for unattended monitoring)."""
+    if not db_path.exists():
+        typer.echo(f"no state db at {db_path} (nothing collected yet).")
+        raise typer.Exit(code=0)
+
+    log_mode = os.environ.get("RESEARCHER_LOG_MODE", "dev")
+    now = datetime.now(UTC)
+    configured: set[str] = set()
+    if sources_file.exists():
+        # status should still report on the DB even if the config is broken
+        with contextlib.suppress(SourceConfigError):
+            configured = {a.config.name for a in load_adapters(sources_file)}
+
+    with Database(db_path) as db:
+        runs = db.list_source_runs()
+        seen = {r.source_name for r in runs}
+        typer.echo(f"Sources ({len(seen | configured)}):")
+        for run in runs:
+            name = _safe_source_name(run.source_name, log_mode)
+            if run.consecutive_error_runs > 0:
+                health = f"FAILING (x{run.consecutive_error_runs})"
+            elif run.last_success_at is None:
+                health = "no success yet"
+            elif (now - run.last_success_at).days > stale_days:
+                health = "STALE"
+            else:
+                health = "ok"
+            age = (
+                f"{(now - run.last_success_at).days}d ago"
+                if run.last_success_at is not None
+                else "never"
+            )
+            typer.echo(
+                f"  {name}: {health}; last success {age}; "
+                f"empty:{run.consecutive_empty_runs} error:{run.consecutive_error_runs}"
+            )
+        for missing in sorted(configured - seen):
+            typer.echo(f"  {_safe_source_name(missing, log_mode)}: NEVER RUN")
+        typer.echo(f"Items: {db.count_items()} total, {db.count_unclassified()} unclassified.")
+
+        if max_consecutive_errors > 0:
+            failing = [r for r in runs if r.consecutive_error_runs >= max_consecutive_errors]
+            if failing:
+                names = ", ".join(_safe_source_name(r.source_name, log_mode) for r in failing)
+                typer.echo(
+                    f"UNHEALTHY: {len(failing)} source(s) failing >= "
+                    f"{max_consecutive_errors} runs: {names}",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+
+
+@app.command(name="validate-config")
+def validate_config(
+    sources_file: Path = typer.Option(DEFAULT_SOURCES, "--sources", help="Sources YAML file."),
+    agent_file: Path = typer.Option(DEFAULT_AGENT, "--agent", help="Agent config YAML file."),
+) -> None:
+    """Validate sources.yaml + agent.yaml without touching the network."""
+    problems: list[str] = []
+
+    if not sources_file.exists():
+        problems.append(f"sources file not found: {sources_file}")
+    else:
+        try:
+            adapters = load_adapters(sources_file)
+            typer.echo(f"sources: {len(adapters)} adapter(s) ok")
+        except SourceConfigError as exc:
+            problems.append(f"sources: {exc}")
+
+    if not agent_file.exists():
+        typer.echo(f"agent: {agent_file} not found (classification will be skipped)")
+    else:
+        try:
+            config = load_agent_config(agent_file)
+            typer.echo(
+                f"agent: {len(config.taxonomy.topics)} topic(s), "
+                f"provider {config.classifier.provider}"
+            )
+        except ConfigError as exc:
+            problems.append(f"agent: {exc}")
+
+    if problems:
+        for problem in problems:
+            typer.echo(f"  ERROR {problem}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("config OK")
 
 
 @app.command()

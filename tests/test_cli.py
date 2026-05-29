@@ -109,10 +109,116 @@ def test_synthesize_still_stub(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
-@pytest.mark.parametrize("cmd", ["collect", "synthesize"])
+@pytest.mark.parametrize("cmd", ["collect", "synthesize", "status", "validate-config"])
 def test_help_runs(cmd: str) -> None:
     result = runner.invoke(app, [cmd, "--help"])
     assert result.exit_code == 0
+
+
+# --- status -------------------------------------------------------------------
+
+
+def test_status_no_db(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["status", "--db", str(tmp_path / "absent.db")])
+    assert result.exit_code == 0
+    assert "nothing collected" in result.output.lower()
+
+
+def test_status_reports_sources_and_totals(tmp_path: Path) -> None:
+    from researcher_agent.models import SourceRun
+
+    db_path = tmp_path / "state.db"
+    db = Database(db_path)
+    db.upsert_source_run(
+        SourceRun(
+            source_name="rss:healthy",
+            last_run_at=datetime.now(UTC),
+            last_success_at=datetime.now(UTC),
+        )
+    )
+    db.upsert_source_run(
+        SourceRun(source_name="rss:broken", last_run_at=datetime.now(UTC), consecutive_error_runs=4)
+    )
+    db.close()
+    result = runner.invoke(
+        app, ["status", "--db", str(db_path), "--sources", str(tmp_path / "none.yaml")]
+    )
+    assert result.exit_code == 0
+    assert "rss:healthy" in result.output
+    assert "FAILING" in result.output
+    assert "Items:" in result.output
+
+
+def test_status_max_consecutive_errors_gate(tmp_path: Path) -> None:
+    from researcher_agent.models import SourceRun
+
+    db_path = tmp_path / "state.db"
+    db = Database(db_path)
+    db.upsert_source_run(
+        SourceRun(source_name="rss:dead", last_run_at=datetime.now(UTC), consecutive_error_runs=8)
+    )
+    db.close()
+    sources = tmp_path / "none.yaml"
+    ok = runner.invoke(app, ["status", "--db", str(db_path), "--sources", str(sources)])
+    assert ok.exit_code == 0  # no gate by default
+    gated = runner.invoke(
+        app,
+        [
+            "status",
+            "--db",
+            str(db_path),
+            "--sources",
+            str(sources),
+            "--max-consecutive-errors",
+            "5",
+        ],
+    )
+    assert gated.exit_code == 1
+    assert "UNHEALTHY" in gated.output
+
+
+def test_status_redacts_names_in_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from researcher_agent.models import SourceRun
+
+    monkeypatch.setenv("RESEARCHER_LOG_MODE", "production")
+    db_path = tmp_path / "state.db"
+    db = Database(db_path)
+    db.upsert_source_run(SourceRun(source_name="rss:secret-feed", last_run_at=datetime.now(UTC)))
+    db.close()
+    result = runner.invoke(app, ["status", "--db", str(db_path)])
+    assert "secret-feed" not in result.output
+
+
+# --- validate-config ----------------------------------------------------------
+
+
+def test_validate_config_ok(tmp_path: Path) -> None:
+    sources = tmp_path / "sources.yaml"
+    sources.write_text(
+        "sources:\n  - name: rss:a\n    type: rss\n    url: https://e.com/feed\n", encoding="utf-8"
+    )
+    agent = tmp_path / "agent.yaml"
+    agent.write_text(AGENT_YAML, encoding="utf-8")
+    result = runner.invoke(
+        app, ["validate-config", "--sources", str(sources), "--agent", str(agent)]
+    )
+    assert result.exit_code == 0
+    assert "config OK" in result.output
+
+
+def test_validate_config_bad_source_errors(tmp_path: Path) -> None:
+    sources = tmp_path / "sources.yaml"
+    sources.write_text(
+        "sources:\n  - name: x\n    type: bogus\n    url: https://e.com\n", encoding="utf-8"
+    )
+    result = runner.invoke(
+        app,
+        ["validate-config", "--sources", str(sources), "--agent", str(tmp_path / "none.yaml")],
+    )
+    assert result.exit_code != 0
+    assert "bogus" in result.output
 
 
 # --- post-processing glue (no network) ----------------------------------------

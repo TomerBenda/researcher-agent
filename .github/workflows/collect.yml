@@ -1,0 +1,119 @@
+name: Collect (daily)
+
+# Runs `researcher collect` unattended each day and persists the SQLite state to
+# a dedicated `state` branch (regular commits, no force-push) so main stays clean.
+on:
+  schedule:
+    - cron: "17 6 * * *" # 06:17 UTC daily
+  workflow_dispatch:
+
+# Run in production logging mode so source names / URLs are redacted in the
+# (public) Actions log.
+env:
+  RESEARCHER_LOG_MODE: production
+
+# Never let two runs race the `state` branch; queue rather than cancel so an
+# in-flight collection finishes and commits before the next starts.
+concurrency:
+  group: collect-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write # to push the state branch
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code (main)
+        uses: actions/checkout@v4
+
+      - name: Restore prior state from the `state` branch
+        uses: actions/checkout@v4
+        with:
+          ref: state
+          path: _state
+        continue-on-error: true # the branch won't exist on the very first run
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Seed state.db from prior run (if any)
+        run: |
+          mkdir -p .researcher
+          if [ -f _state/state.db ]; then
+            cp _state/state.db .researcher/state.db
+            echo "restored prior state.db"
+          else
+            echo "no prior state — cold start"
+          fi
+
+      - name: Collect
+        # No --fail-on-error: a flaky feed must not block persisting the day's
+        # good items. collect exits 0 on partial source failures and checkpoints
+        # the WAL into state.db before exiting. Classification runs only if
+        # GEMINI_API_KEY is set (else it's skipped cleanly); the rendered reports
+        # go to an ephemeral dir (publishing to the inbox repo is a separate flow).
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # This is a PUBLIC repo, so the committed example list IS the production
+          # source list for this cron (the real personal sources.yaml stays local).
+          cp config/sources.example.yaml config/sources.yaml
+          cp config/agent.example.yaml config/agent.yaml
+          uv run researcher collect --db .researcher/state.db --vault _vault
+          uv run researcher status --db .researcher/state.db --sources config/sources.yaml
+
+      - name: Verify integrity and checkpoint (must be the last DB write before commit)
+        run: |
+          uv run python -c "import sys; from researcher_agent.state import Database; \
+            db = Database('.researcher/state.db'); ok = db.integrity_check(); \
+            db.checkpoint(); db.close(); sys.exit(0 if ok else 1)"
+
+      - name: Commit state.db to the `state` branch
+        env:
+          # Keep the token out of the on-disk remote URL / any echoed git output;
+          # pass it as a per-invocation auth header instead (and it's masked anyway).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH="AUTHORIZATION: bearer ${GH_TOKEN}"
+          REMOTE="https://github.com/${{ github.repository }}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Work in a clean clone so only state.db can ever be committed (no git add -A).
+          rm -rf _publish && mkdir _publish && cd _publish
+          git init -q
+          git remote add origin "$REMOTE"
+          if git -c http.extraheader="$AUTH" fetch -q origin state; then
+            git checkout -q -b state FETCH_HEAD
+          else
+            git checkout -q --orphan state
+          fi
+          cp ../.researcher/state.db state.db
+          # state.db is the only tracked file; -wal/-shm stay local (gitignored).
+          echo "state.db" > .gitignore
+          git add state.db .gitignore
+          if git diff --cached --quiet; then
+            echo "no state change to commit"
+          else
+            git commit -q -m "state: collect $(date -u +%Y-%m-%dT%H:%MZ)"
+            git -c http.extraheader="$AUTH" push -q origin state
+          fi
+
+      - name: Surface chronically failing sources
+        # Runs AFTER the state commit so a dead feed makes the run red for
+        # visibility without ever costing the day's persisted progress.
+        run: uv run researcher status --db .researcher/state.db --max-consecutive-errors 7

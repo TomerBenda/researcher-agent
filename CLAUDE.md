@@ -30,8 +30,8 @@ Constraints worth memorizing:
 | HTTP client | `researcher_agent/http.py` | Shared polite `httpx` wrapper (UA, per-host spacing, Retry-After, conditional GET). |
 | Canonicalize | `researcher_agent/canonicalize.py` | URL → canonical string + `canonical_hash`. arXiv/IDN handling. `canonicalization_version = 1`. |
 | Entities | `researcher_agent/entities.py` | Regex extraction of CVE / repo / package. Capped at 64/item. |
-| Sources | `researcher_agent/sources/` | `base.py` (Protocol + config), `rss.py` (RSS adapter), `__init__.py` (loader + registry). |
-| Normalize | `researcher_agent/normalize.py` | `normalize_rss(raw, now) -> (Item, [ItemEntity])`. Pure; HTML-strips before extraction. |
+| Sources | `researcher_agent/sources/` | `base.py` (Protocol + config), `__init__.py` (loader + registry). Adapters: `rss.py`, `arxiv.py`, `hn_search.py`, `github_releases.py`, `github_topic.py`. Shared: `feed.py` (feedparser), `github.py` (REST headers/dates). |
+| Normalize | `researcher_agent/normalize.py` | `build_item` + one `normalize_*` per source type. Pure; HTML-strips, bounds summary/extraction length. |
 | Config | `researcher_agent/config.py` | Loads `agent.yaml`: config-driven taxonomy, classifier/dedup settings, vault_path. |
 | Prompts | `researcher_agent/prompts.py` + `prompts/*.md` | Prompt files hashed at load; `classifier_version` = hash(prompt + model). |
 | Classifier | `researcher_agent/classify.py` | Batch + per-item retry + token budget + circuit breaker + fallback. Provider-agnostic. |
@@ -39,9 +39,10 @@ Constraints worth memorizing:
 | Dedupe | `researcher_agent/dedupe.py` | `find_duplicates` — entity-overlap + fuzzy title/window. Pure; conservative. |
 | Collect | `researcher_agent/collect.py` | `run_collect` (fetch/store) + `post_process` (classify→dedupe→render). Per-source error isolation. |
 | Vault writer | `researcher_agent/vault.py` | Renders collection + synthesis reports. Pure functions; atomic writes. |
-| CLI | `researcher_agent/__main__.py` | Typer; `collect` (full pipeline as of M3) and `synthesize` (stub through M5). |
+| CLI | `researcher_agent/__main__.py` | Typer; `collect` (full pipeline), `status`, `validate-config`, `synthesize` (stub through M5). |
+| Cron | `.github/workflows/collect.yml` | Daily collect; commits `state.db` to the `state` branch (checkpoint + integrity-check first). |
 | Golden set | `config/golden_set.jsonl` | 25 labeled items; `make test-golden` asserts ≥85% top-1 (opt-in, costs tokens). |
-| Tests | `tests/` | Unit + snapshot + golden. 294 after M3 (198 after M2, 52 after M1); never let this drop silently. |
+| Tests | `tests/` | Unit + snapshot + golden. 345 after M4 (294 after M3, 198 after M2, 52 after M1); never let this drop silently. |
 | Snapshots | `tests/snapshots/` | Vault rendering golden files. Regenerate with `UPDATE_SNAPSHOTS=1 pytest`. |
 | CI | `.github/workflows/ci.yml` | ruff + format-check + mypy --strict + pytest. |
 | state.db | **Not in this repo.** Will live on a dedicated `state` branch (regular commits, no force-push). | Adds full audit history; main stays clean. |
@@ -174,7 +175,7 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 
 ---
 
-## 6. Milestone M2 — COMPLETE (M3 also complete — see §7; next: M4)
+## 6. Milestone M2 — COMPLETE (M3 + M4 also complete — see §7; next: M5)
 
 **Goal:** First source vertical slice + polite HTTP foundation + entity extraction. After M2, `researcher collect --since X --until Y` produces a real collection report (containing only RSS items, no classifier yet — classification lands in M3, so the reports show un-classified items with `topic="unclassified"` as a placeholder, OR M2 skips vault rendering and stops at the storage layer; pick whichever keeps M2 small).
 
@@ -235,7 +236,7 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 > - **Golden set is 25 items** (spec said grow to ≥50 by end of M3) — a solid ambiguity-favoring starter set covering all 10 slugs; grow it as the taxonomy/focus shifts. The ≥85% top-1 assertion has NOT been run here (no `GEMINI_API_KEY`); run `make test-golden` with a key to validate before relying on the classifier.
 > - **`config/agent.yaml` is gitignored** (it carries the personal `vault_path`, invariant #20); `config/agent.example.yaml` is the public artifact. The remaining review items (in-provider 429 backoff, token-estimate accuracy, dedupe blocking) are deferred to M4 — see CHANGELOG.
 
-### M4 — Remaining sources + sources.yaml + collect cron
+### M4 — Remaining sources + sources.yaml + collect cron — COMPLETE
 - GitHub releases adapter (via raw `httpx`, **not** PyGithub).
 - GitHub topic-search adapter.
 - arXiv adapter.
@@ -243,6 +244,13 @@ Spawn via the Task tool with a focused brief. Do not try to make one mega-agent 
 - `source-list-researcher` produces draft `sources.yaml` for review.
 - `.github/workflows/collect.yml` runs `researcher collect` daily; commits state.db to `state` branch.
 - `validate-config` and `status` CLI commands.
+
+> **M4 resolution notes (decisions made during the build):**
+> - **All adapters use the shared `PoliteClient`** and feed a per-`source_type` normalizer via an explicit dispatch dict in `collect.py`; normalizers share `build_item`. arXiv reuses the feedparser helpers (`sources/feed.py`); the two GitHub adapters share `sources/github.py` (REST headers + ISO→epoch).
+> - **Cursors:** RSS/GitHub-releases use ETag/304; HN uses a `created_at_i` watermark; GitHub-topic a `pushed_at` watermark; arXiv none (idempotent storage handles re-fetch).
+> - **`source-list-researcher` not spawned:** the example list demonstrates one entry per type; curating a personal ~50-source list is the owner's task (and the real `sources.yaml` is gitignored, invariant #20). The cron runs the public example list (a deliberate choice for a public repo).
+> - **Cron classifies only if `GEMINI_API_KEY` secret is set** (else skips cleanly) and renders to an ephemeral dir — publishing reports to the inbox repo is a separate flow (M5+). `state.db` (WAL) is checkpointed + integrity-checked before each commit to the `state` branch.
+> - **Live-validated:** GitHub/HN/RSS adapters collected 378 items end-to-end. arXiv's export API is externally flaky (429/timeout); collect isolates it per-source and retries next run (the polite client now backs off on a header-less 429). Deferred: per-host intervals, response-size streaming cap, GitHub Search 403 backoff — see CHANGELOG.
 
 ### M5 — Synthesis agent + tools
 - Tools (each independently testable): `query_items`, `fetch_url` (with body cache check), `get_entities`, `add_followup`, `finish`. Tools return structured `{ok, result|error}` shapes — never raise into the agent loop.

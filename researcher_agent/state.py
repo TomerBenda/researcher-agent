@@ -369,17 +369,24 @@ class Database:
         row = self.conn.execute(
             "SELECT * FROM source_runs WHERE source_name = ?", (source_name,)
         ).fetchone()
-        if row is None:
-            return None
-        return SourceRun(
-            source_name=row["source_name"],
-            cursor=_loads(row["cursor_json"]),
-            last_run_at=_from_iso(row["last_run_at"]),
-            last_success_at=_from_iso(row["last_success_at"]),
-            last_error=row["last_error"],
-            consecutive_empty_runs=row["consecutive_empty_runs"],
-            consecutive_error_runs=row["consecutive_error_runs"],
-        )
+        return None if row is None else _row_to_source_run(row)
+
+    def list_source_runs(self) -> list[SourceRun]:
+        """All persisted source-run rows, ordered by name (for `status`)."""
+        rows = self.conn.execute("SELECT * FROM source_runs ORDER BY source_name").fetchall()
+        return [_row_to_source_run(r) for r in rows]
+
+    def count_items(self) -> int:
+        """Total non-superseded items."""
+        row = self.conn.execute("SELECT COUNT(*) FROM items WHERE superseded_by IS NULL").fetchone()
+        return int(row[0])
+
+    def count_unclassified(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM items "
+            "WHERE current_classification_id IS NULL AND superseded_by IS NULL"
+        ).fetchone()
+        return int(row[0])
 
     def upsert_source_run(self, run: SourceRun) -> None:
         self.conn.execute(
@@ -485,6 +492,18 @@ def _row_to_item(row: sqlite3.Row) -> Item:
         ingested_at=ingested_at,
         metadata=_loads(row["metadata_json"]),
         canonicalization_version=row["canonicalization_version"],
+    )
+
+
+def _row_to_source_run(row: sqlite3.Row) -> SourceRun:
+    return SourceRun(
+        source_name=row["source_name"],
+        cursor=_loads(row["cursor_json"]),
+        last_run_at=_from_iso(row["last_run_at"]),
+        last_success_at=_from_iso(row["last_success_at"]),
+        last_error=row["last_error"],
+        consecutive_empty_runs=row["consecutive_empty_runs"],
+        consecutive_error_runs=row["consecutive_error_runs"],
     )
 
 

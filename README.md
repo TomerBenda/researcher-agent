@@ -2,7 +2,7 @@
 
 A personal AI security research intelligence agent. Ingests from configured sources (RSS, GitHub, arXiv, Hacker News), classifies items into a research-specific taxonomy, dedupes across sources, writes daily digests to an Obsidian vault, and produces a real synthesis weekly via a tool-using LLM agent.
 
-Built and operated by [tbd](https://github.com/tbd). Public from day one as a research artifact; fork it for your own research focus.
+Built and operated by [tbd](https://github.com/TomerBenda). Public from day one as a research artifact; fork it for your own research focus.
 
 ## Two flows
 
@@ -22,7 +22,7 @@ export GEMINI_API_KEY=...                             # free tier from Google AI
 # gather -> classify -> dedupe -> render a collection report
 uv run researcher collect
 
-# collect without the LLM step (offline; just fetch + store)
+# collect without the LLM step (just fetch + store)
 uv run researcher collect --no-classify
 
 # target a single source, or constrain the window
@@ -37,6 +37,8 @@ gracefully if no `GEMINI_API_KEY` (or `config/agent.yaml`) is present — items 
 still stored, just left unclassified for a later run.
 
 ```bash
+uv run researcher validate-config   # check sources.yaml + agent.yaml (offline)
+uv run researcher status             # per-source health + store totals
 make test          # unit + integration suite (no network, no tokens)
 make test-golden   # opt-in: real classifier vs config/golden_set.jsonl (costs tokens)
 ```
@@ -45,10 +47,12 @@ See [`docs/researcher-agent-spec.md`](docs/researcher-agent-spec.md) for the ful
 
 ## Status
 
-Early build — see `CHANGELOG.md`. As of **M3**, `collect` runs the full pipeline:
-fetch → canonicalize → extract entities → **classify (Gemini/Ollama) → dedupe →
-render** a collection report to the vault. The remaining source types
-(GitHub/arXiv/HN), the daily cron, and the `synthesize` agent land in M4–M5.
+Early build — see `CHANGELOG.md`. As of **M4**, `collect` ingests **all five
+source types** (RSS, arXiv, Hacker News, GitHub releases, GitHub topic search),
+runs the full pipeline (canonicalize → entities → classify → dedupe → render),
+and runs **daily via GitHub Actions**, persisting `state.db` to a dedicated
+`state` branch. `status` / `validate-config` aid unattended operation. The
+`synthesize` agent lands in M5.
 
 ## License
 

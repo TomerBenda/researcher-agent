@@ -6,6 +6,27 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (M4 — remaining source types + daily cron + ops commands)
+- Three new source types beyond RSS, all via the shared polite client (raw httpx / feedparser; no PyGithub), each with cursor handling and MockTransport tests:
+  - **arXiv** (`sources/arxiv.py`): queries the export Atom API; reuses the shared feedparser helpers (`sources/feed.py`).
+  - **Hacker News** (`sources/hn_search.py`): Algolia search-by-date with a `created_at_i` high-watermark cursor.
+  - **GitHub releases** (`sources/github_releases.py`): REST with an ETag/304 cursor; skips drafts.
+  - **GitHub topic search** (`sources/github_topic.py`): `/search/repositories` with a `pushed_at` watermark cursor.
+- Per-type normalizers (`normalize_arxiv` / `normalize_hn` / `normalize_github_release` / `normalize_github_repo`), all built on a shared `build_item` helper; the collect pipeline dispatches by `source_type`. All five types are registered in the loader and demonstrated in `config/sources.example.yaml`.
+- **CLI:** `researcher status` (per-source health — STALE / FAILING / NEVER RUN — plus item/backlog totals, source names redacted in production, optional `--max-consecutive-errors` exit gate) and `researcher validate-config` (checks both YAML files offline).
+- **Daily cron** (`.github/workflows/collect.yml`): restores `state.db` from a dedicated `state` branch, collects, integrity-checks + WAL-checkpoints, and commits `state.db` back (no force-push; orphan branch on cold start; token via `http.extraheader`; serialized via a concurrency group). `Database.checkpoint()` / `integrity_check()` support it.
+- Gemini provider now backs off on 429 / RESOURCE_EXHAUSTED, and the polite client backs off a bounded default on a 429 with no `Retry-After` (arXiv does this).
+- Test suite grew from 294 to 345 (no new dependencies).
+
+### Security / robustness (from M4 reviews)
+- The GitHub / HN adapters now tolerate malformed-but-200 responses (non-list/non-dict shapes, a string `author`) instead of letting one tampered/erroring upstream silently kill a source.
+- `build_item` truncates a stored summary (4k chars) and the entity-extraction text (20k) so a hostile/huge release body can't bloat storage or the classifier prompt.
+- The cron commits `state.db` only after the integrity check + WAL checkpoint, and only `state.db` (never `git add -A`); a corrupt DB fails the run without overwriting good history.
+
+### Deferred (captured from M4 reviews)
+- A response-size streaming cap in the polite client (today only timeout + the truncations above bound input size).
+- Per-host minimum intervals (arXiv asks ~3s; the global default is 1s) and GitHub Search secondary-rate-limit (403) backoff. arXiv's export API is also externally flaky (429/timeout); collect isolates it per-source and retries next run.
+
 ### Fixed / hardened (post-M3 review remediation)
 - **Dead config wired up:** `classifier`-adjacent `tracking_params_to_strip` from `agent.yaml` is now actually threaded into URL canonicalization during `collect` (the CLI previously loaded it but never passed it to normalization).
 - **Honest source health:** added `source_runs.consecutive_error_runs` (migration `002`) so a failing/moved feed is distinguishable from a merely quiet one — `consecutive_empty_runs` no longer conflates a 304/quiet run with a dead source. (Feeds the M4 `status` command.)

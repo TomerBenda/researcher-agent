@@ -2,10 +2,10 @@
 #
 #   cp config/sources.example.yaml config/sources.yaml
 #
-# Each entry needs a unique `name` and a `type`. M2 supports `type: rss` only;
-# github_releases / github_topic / arxiv / hn_search land in M4. The curated
-# ~50-source list is produced in M4 (see CLAUDE.md §5.6 source-list-researcher);
-# the entries below are a small, recognizable starter set for AI-security work.
+# Each entry needs a unique `name` and a `type`. Supported types: rss,
+# github_releases, github_topic, arxiv, hn_search (one example of each below).
+# This is a small, recognizable starter set for AI-security work; grow/curate it
+# for your own focus (see CLAUDE.md §5.6 source-list-researcher).
 
 sources:
   - name: rss:simon-willison
@@ -27,3 +27,24 @@ sources:
     type: rss
     url: https://github.blog/category/security/feed/
     # supply-chain & platform security from GitHub
+
+  - name: gh-releases:modelcontextprotocol/servers
+    type: github_releases
+    repo: modelcontextprotocol/servers
+    # new releases of the reference MCP servers
+
+  - name: gh-topic:mcp-server
+    type: github_topic
+    topic: mcp-server
+    min_stars: 5
+    # repos tagged with the mcp-server topic, updated recently
+
+  - name: arxiv:agent-security
+    type: arxiv
+    query: 'cat:cs.CR AND (abs:"prompt injection" OR abs:"LLM agent")'
+    # security papers on prompt injection / agents (native arXiv query syntax)
+
+  - name: hn:mcp
+    type: hn_search
+    query: '"model context protocol" OR mcp-server'
+    # Hacker News discussion of MCP
