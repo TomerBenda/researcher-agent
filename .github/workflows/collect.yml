@@ -30,12 +30,27 @@ jobs:
       - name: Checkout code (main)
         uses: actions/checkout@v4
 
-      - name: Restore prior state from the `state` branch
-        uses: actions/checkout@v4
-        with:
-          ref: state
-          path: _state
-        continue-on-error: true # the branch won't exist on the very first run
+      - name: Restore prior state.db from the `state` branch (if it exists)
+        # Manual shallow fetch rather than actions/checkout@v4 with `ref: state`:
+        # on a cold start (no `state` branch yet) checkout exits non-zero and the
+        # step shows red even with continue-on-error, which is confusing. The
+        # `if` here swallows the cold-start fetch failure so this step stays
+        # GREEN, and we only need the single latest state.db blob, not history.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          AUTH="AUTHORIZATION: bearer ${GH_TOKEN}"
+          REMOTE="https://github.com/${{ github.repository }}.git"
+          rm -rf _state && mkdir _state && cd _state
+          git init -q
+          git remote add origin "$REMOTE"
+          if git -c http.extraheader="$AUTH" fetch -q --depth 1 origin state; then
+            git checkout -q FETCH_HEAD
+            echo "fetched prior state from the state branch"
+          else
+            echo "no state branch yet — cold start"
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -105,20 +120,23 @@ jobs:
           set -euo pipefail
           AUTH="AUTHORIZATION: bearer ${GH_TOKEN}"
           REMOTE="https://github.com/${{ github.repository }}.git"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           # Retry the fetch->commit->push cycle: if another writer (e.g. a manual
           # dispatch) advanced `state` between our fetch and push, the non-force
           # push is rejected — re-fetch and re-apply our state.db rather than
-          # failing the job and losing the day. state.db is a single blob that
-          # fully replaces the prior, so latest-writer-wins is correct and any
-          # items the other run had are re-collected idempotently next run.
+          # failing the day. state.db is a single blob that fully replaces the
+          # prior, so latest-writer-wins is correct and anything the other run
+          # had is re-collected idempotently next run.
           pushed=0
           for attempt in 1 2 3; do
             # Work in a fresh clean clone so only state.db can ever be committed
             # (no git add -A) and each attempt re-fetches the latest tip.
             rm -rf _publish && mkdir _publish && cd _publish
             git init -q
+            # Identity MUST be set on THIS repo (the one the commit runs in), not
+            # the outer main checkout — otherwise `git commit` fails with
+            # "Author identity unknown / Please tell me who you are".
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
             git remote add origin "$REMOTE"
             if git -c http.extraheader="$AUTH" fetch -q origin state; then
               git checkout -q -b state FETCH_HEAD
