@@ -60,9 +60,63 @@ def test_gemini_error_is_wrapped() -> None:
             raise RuntimeError("network down")
 
     client = type("C", (), {"models": _Boom()})()
-    p = GeminiProvider(client=client)
+    p = GeminiProvider(client=client, sleep=lambda s: None)
     with pytest.raises(ProviderError):
         p.classify("S", INPUTS, temperature=0.0)
+
+
+class _RateLimitError(Exception):
+    code = 429
+
+
+class _FlakyModels:
+    def __init__(self, text: str, fail_times: int) -> None:
+        self._text = text
+        self._remaining = fail_times
+        self.calls = 0
+
+    def generate_content(self, **kw: Any) -> Any:
+        self.calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise _RateLimitError("RESOURCE_EXHAUSTED: quota")
+        return type("R", (), {"text": self._text})()
+
+
+def test_gemini_retries_on_rate_limit_then_succeeds() -> None:
+    sleeps: list[float] = []
+    models = _FlakyModels(GOOD_JSON, fail_times=2)
+    client = type("C", (), {"models": models})()
+    p = GeminiProvider(client=client, sleep=sleeps.append, backoff_base_seconds=2.0)
+    out = p.classify("S", INPUTS, temperature=0.0)
+    assert out["1"].topic == "tooling"
+    assert models.calls == 3  # 2 rate-limited + 1 success
+    assert sleeps == [1.0, 2.0]  # 2**0, 2**1 backoff
+
+
+def test_gemini_gives_up_after_max_rate_limit_retries() -> None:
+    models = _FlakyModels(GOOD_JSON, fail_times=99)
+    client = type("C", (), {"models": models})()
+    p = GeminiProvider(client=client, sleep=lambda s: None, max_rate_limit_retries=2)
+    with pytest.raises(ProviderError):
+        p.classify("S", INPUTS, temperature=0.0)
+    assert models.calls == 3  # initial + 2 retries
+
+
+def test_gemini_non_rate_limit_error_not_retried() -> None:
+    models = _FlakyModels(GOOD_JSON, fail_times=99)
+
+    # override to raise a non-rate-limit error
+    def boom(**kw: Any) -> Any:
+        raise RuntimeError("bad request")
+
+    models.generate_content = boom  # type: ignore[method-assign]
+    client = type("C", (), {"models": models})()
+    sleeps: list[float] = []
+    p = GeminiProvider(client=client, sleep=sleeps.append)
+    with pytest.raises(ProviderError):
+        p.classify("S", INPUTS, temperature=0.0)
+    assert sleeps == []  # no backoff on a non-rate-limit error
 
 
 # --- Ollama --------------------------------------------------------------------

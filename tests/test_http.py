@@ -197,19 +197,35 @@ def test_retry_after_within_cap_is_honored() -> None:
     assert 30.0 in clock.sleeps
 
 
-def test_no_retry_without_retry_after_header() -> None:
+def test_default_backoff_when_no_retry_after_header() -> None:
+    # a 429 without Retry-After still means "slow down": back off a bounded
+    # default and retry (some APIs, e.g. arXiv, 429 with no header)
+    clock = FakeClock()
+    responses = iter([httpx.Response(429), httpx.Response(200)])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return next(responses)
+
+    with _client(handler, clock=clock, default_retry_after_seconds=2.0) as c:
+        resp = c.get("https://example.com/feed")
+
+    assert resp.status_code == 200
+    assert clock.sleeps == [2.0]
+
+
+def test_default_backoff_bounded_by_max_retries() -> None:
     calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(429)  # no Retry-After
+        return httpx.Response(429)  # no Retry-After, persistent
 
-    with _client(handler) as c:
+    with _client(handler, max_retries=2, default_retry_after_seconds=1.0) as c:
         resp = c.get("https://example.com/feed")
 
     assert resp.status_code == 429
-    assert calls == 1
+    assert calls == 3  # initial + 2 bounded retries, then give up
 
 
 # --- per-host minimum interval -------------------------------------------------

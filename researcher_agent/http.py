@@ -54,6 +54,7 @@ class PoliteClient:
         min_interval_seconds: float = 1.0,
         max_retries: int = 2,
         max_retry_after_seconds: float = 60.0,
+        default_retry_after_seconds: float = 2.0,
         timeout: float = 20.0,
         transport: httpx.BaseTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -69,6 +70,7 @@ class PoliteClient:
         self._min_interval = min_interval_seconds
         self._max_retries = max_retries
         self._max_retry_after = max_retry_after_seconds
+        self._default_retry_after = default_retry_after_seconds
         self._sleep = sleep
         self._clock = clock
         self._last_request_at: dict[str, float] = {}
@@ -113,10 +115,13 @@ class PoliteClient:
 
                 if response.status_code == 429 and attempts < self._max_retries:
                     wait = _parse_retry_after(response.headers.get("Retry-After"))
-                    # Give up (return the 429) rather than retry if there is no
-                    # Retry-After or it asks for an unreasonably long wait — a
-                    # broken/hostile server must not stall the whole serial run.
-                    if wait is not None and wait <= self._max_retry_after:
+                    # No Retry-After header still means "slow down" — back off a
+                    # bounded default (some APIs, e.g. arXiv, 429 without one).
+                    if wait is None:
+                        wait = self._default_retry_after
+                    # But never honor an unreasonably long wait — a broken/hostile
+                    # server must not stall the whole serial run.
+                    if wait <= self._max_retry_after:
                         self._sleep(wait)
                         attempts += 1
                         continue
