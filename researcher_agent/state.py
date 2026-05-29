@@ -230,6 +230,19 @@ class Database:
         ).fetchall()
         return [_row_to_item(r) for r in rows]
 
+    def list_items_in_window(self, start: datetime, end: datetime) -> list[Item]:
+        """Non-superseded items ingested in [start, end), oldest first.
+
+        The synthesis agent's window read. Half-open so adjacent windows don't
+        double-count a boundary item.
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM items WHERE ingested_at >= ? AND ingested_at < ? "
+            "AND superseded_by IS NULL ORDER BY ingested_at, canonical_hash",
+            (_iso(start), _iso(end)),
+        ).fetchall()
+        return [_row_to_item(r) for r in rows]
+
     # --- bodies -------------------------------------------------------------
 
     def set_item_body(self, body: ItemBody) -> None:
