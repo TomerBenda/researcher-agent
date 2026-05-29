@@ -50,11 +50,22 @@ jobs:
         run: uv sync --all-extras
 
       - name: Seed state.db from prior run (if any)
+        # Validate the restored DB. If the committed copy is somehow corrupt,
+        # cold-start instead of restoring it every run forever — otherwise the
+        # cron wedges red with no self-recovery. The corrupt blob stays in the
+        # `state` branch's git history for forensics (commits are never rewritten).
         run: |
           mkdir -p .researcher
           if [ -f _state/state.db ]; then
             cp _state/state.db .researcher/state.db
-            echo "restored prior state.db"
+            if uv run python -c "import sys; from researcher_agent.state import Database; \
+              d = Database('.researcher/state.db'); ok = d.integrity_check(); d.close(); \
+              sys.exit(0 if ok else 1)"; then
+              echo "restored prior state.db (integrity ok)"
+            else
+              echo "::error::restored state.db failed integrity check — cold-starting"
+              rm -f .researcher/state.db
+            fi
           else
             echo "no prior state — cold start"
           fi
@@ -76,11 +87,14 @@ jobs:
           uv run researcher collect --db .researcher/state.db --vault _vault
           uv run researcher status --db .researcher/state.db --sources config/sources.yaml
 
-      - name: Verify integrity and checkpoint (must be the last DB write before commit)
+      - name: Checkpoint WAL then verify the file we will commit
+        # Checkpoint FIRST (fold the -wal sidecar into the main file), THEN run
+        # integrity_check on the exact bytes that will be committed. A corrupt
+        # post-checkpoint DB fails the job here so the bad file is never pushed.
         run: |
           uv run python -c "import sys; from researcher_agent.state import Database; \
-            db = Database('.researcher/state.db'); ok = db.integrity_check(); \
-            db.checkpoint(); db.close(); sys.exit(0 if ok else 1)"
+            db = Database('.researcher/state.db'); db.checkpoint(); \
+            ok = db.integrity_check(); db.close(); sys.exit(0 if ok else 1)"
 
       - name: Commit state.db to the `state` branch
         env:
@@ -93,24 +107,43 @@ jobs:
           REMOTE="https://github.com/${{ github.repository }}.git"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Work in a clean clone so only state.db can ever be committed (no git add -A).
-          rm -rf _publish && mkdir _publish && cd _publish
-          git init -q
-          git remote add origin "$REMOTE"
-          if git -c http.extraheader="$AUTH" fetch -q origin state; then
-            git checkout -q -b state FETCH_HEAD
-          else
-            git checkout -q --orphan state
-          fi
-          cp ../.researcher/state.db state.db
-          # state.db is the only tracked file; -wal/-shm stay local (gitignored).
-          echo "state.db" > .gitignore
-          git add state.db .gitignore
-          if git diff --cached --quiet; then
-            echo "no state change to commit"
-          else
+          # Retry the fetch->commit->push cycle: if another writer (e.g. a manual
+          # dispatch) advanced `state` between our fetch and push, the non-force
+          # push is rejected — re-fetch and re-apply our state.db rather than
+          # failing the job and losing the day. state.db is a single blob that
+          # fully replaces the prior, so latest-writer-wins is correct and any
+          # items the other run had are re-collected idempotently next run.
+          pushed=0
+          for attempt in 1 2 3; do
+            # Work in a fresh clean clone so only state.db can ever be committed
+            # (no git add -A) and each attempt re-fetches the latest tip.
+            rm -rf _publish && mkdir _publish && cd _publish
+            git init -q
+            git remote add origin "$REMOTE"
+            if git -c http.extraheader="$AUTH" fetch -q origin state; then
+              git checkout -q -b state FETCH_HEAD
+            else
+              git checkout -q --orphan state
+            fi
+            cp ../.researcher/state.db state.db
+            # state.db is the only tracked file; -wal/-shm stay local (gitignored).
+            echo "state.db" > .gitignore
+            git add state.db .gitignore
+            if git diff --cached --quiet; then
+              echo "no state change to commit"
+              pushed=1; cd ..; break
+            fi
             git commit -q -m "state: collect $(date -u +%Y-%m-%dT%H:%MZ)"
-            git -c http.extraheader="$AUTH" push -q origin state
+            if git -c http.extraheader="$AUTH" push -q origin state; then
+              echo "pushed state (attempt $attempt)"
+              pushed=1; cd ..; break
+            fi
+            echo "::warning::state push rejected (attempt $attempt) — re-fetching and retrying"
+            cd ..
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "::error::failed to push state.db after retries"
+            exit 1
           fi
 
       - name: Surface chronically failing sources
