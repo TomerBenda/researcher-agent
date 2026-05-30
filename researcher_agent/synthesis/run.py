@@ -100,7 +100,7 @@ def _derive_weekly_entities(
     return [
         WeeklyEntity(
             week_starting=week_starting,
-            kind=kind,  # type: ignore[arg-type]  # kind came from a stored ItemEntity (valid EntityKind)
+            kind=kind,
             value=value,
             context=contexts.get((kind, value)) or value,
             related_item_hashes=sorted(hashes[(kind, value)]),

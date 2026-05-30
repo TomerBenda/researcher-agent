@@ -9,9 +9,9 @@ from researcher_agent.llm.base import ProviderError
 from researcher_agent.synthesis.agent import (
     AgentMessage,
     AgentReply,
+    TokenUsage,
     ToolCall,
     ToolResultBlock,
-    TokenUsage,
     run_agent,
 )
 from researcher_agent.synthesis.tools import ToolSpec, tool_specs
