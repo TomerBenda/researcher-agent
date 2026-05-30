@@ -47,12 +47,15 @@ See [`docs/researcher-agent-spec.md`](docs/researcher-agent-spec.md) for the ful
 
 ## Status
 
-Early build — see `CHANGELOG.md`. As of **M4**, `collect` ingests **all five
-source types** (RSS, arXiv, Hacker News, GitHub releases, GitHub topic search),
-runs the full pipeline (canonicalize → entities → classify → dedupe → render),
-and runs **daily via GitHub Actions**, persisting `state.db` to a dedicated
-`state` branch. `status` / `validate-config` aid unattended operation. The
-`synthesize` agent lands in M5.
+See `CHANGELOG.md`. **M0–M5 complete — the project is operational.** `collect`
+ingests **all five source types** (RSS, arXiv, Hacker News, GitHub releases,
+GitHub topic search), runs the full pipeline (canonicalize → entities → classify
+→ dedupe → render), and runs **daily via GitHub Actions**, persisting `state.db`
+to a dedicated `state` branch. `synthesize` runs a bounded tool-using LLM agent
+over a window of classified items and writes a synthesis report (themes,
+entities, follow-up queue), **weekly via GitHub Actions** (Anthropic preferred,
+Gemini fallback). `status` / `validate-config` aid unattended operation. After
+M5, iteration is config + prompt tuning, not new code.
 
 ## License
 
