@@ -7,7 +7,7 @@ Commands over a shared substrate (SQLite store + vault):
   when no provider/API key is available.
 - `status` — per-source health + store totals (for unattended monitoring).
 - `validate-config` — check sources.yaml + agent.yaml without touching the network.
-- `synthesize` — run the synthesis agent over a window. Still a stub through M5.
+- `synthesize` — run the tool-using synthesis agent over a window and render a report.
 
 Periodicity is an orchestration concern (cron, GitHub Actions, manual). The
 commands themselves are window-parameterized and idempotent.
@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -30,6 +31,9 @@ from researcher_agent.llm.base import ProviderError
 from researcher_agent.llm.factory import build_classifier_provider
 from researcher_agent.sources import SourceConfigError, load_adapters
 from researcher_agent.state import Database
+from researcher_agent.synthesis.providers import build_synthesis_provider
+from researcher_agent.synthesis.run import run_synthesis
+from researcher_agent.vault import SynthesisWindow
 
 # pretty_exceptions disabled so an unexpected error propagates to `main()`'s
 # redaction guard instead of Typer printing a rich traceback (which can embed a
@@ -314,15 +318,83 @@ def synthesize(
         None, help="Shorthand: N trailing days ending at --until. Overrides --since."
     ),
     label: str | None = typer.Option(None, help="Override window label used in filename/heading."),
+    agent_file: Path = typer.Option(
+        DEFAULT_AGENT, "--agent", help="Agent config (taxonomy + research focus + vault)."
+    ),
+    db_path: Path = typer.Option(DEFAULT_DB, "--db", help="Path to the SQLite state DB."),
+    vault: str | None = typer.Option(
+        None, "--vault", help="Override the vault path for the report."
+    ),
+    min_score: int = typer.Option(5, help="Only synthesize items scored at least this."),
+    max_turns: int = typer.Option(20, help="Max agent tool-call turns before a degraded finish."),
     write_vault: bool = typer.Option(
-        True,
-        "--write-vault/--no-write-vault",
-        help="Write a synthesis report to the vault.",
+        True, "--write-vault/--no-write-vault", help="Write a synthesis report to the vault."
     ),
 ) -> None:
-    """Read items in a window, run the synthesis agent, render a report. Not yet implemented."""
-    typer.echo("synthesize: not yet implemented (M5)")
-    raise typer.Exit(code=1)
+    """Read items in a window, run the synthesis agent, and render a report."""
+    now = datetime.now(UTC)
+    try:
+        until_dt = _parse_window_dt(until) if until else now
+        if days is not None:
+            window = SynthesisWindow.trailing_days(until_dt, days)
+        elif since:
+            window = SynthesisWindow.date_range(_parse_window_dt(since), until_dt)
+        else:
+            window = SynthesisWindow.trailing_days(until_dt, 7)
+    except ValueError as exc:
+        typer.echo(f"invalid date: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if label:
+        window = replace(window, label=label)
+
+    config = _load_agent_config(agent_file, warn_if_missing=True)
+    if config is None:
+        typer.echo("synthesize requires agent.yaml (taxonomy + research focus).", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        provider = build_synthesis_provider()
+    except ProviderError as exc:
+        # No synthesis API key -> clean skip (matches collect's offline behavior).
+        typer.echo(f"skipping synthesis: {exc}")
+        raise typer.Exit(code=0) from None
+
+    if not write_vault:
+        vault_root: Path | None = None
+    elif vault:
+        vault_root = Path(vault)
+    elif config.vault_path:
+        vault_root = Path(config.vault_path)
+    else:
+        vault_root = None
+
+    if not db_path.exists():
+        typer.echo(f"no state db at {db_path} (nothing collected yet).", err=True)
+        raise typer.Exit(code=2)
+
+    with Database(db_path) as db, PoliteClient() as client:
+        stats = run_synthesis(
+            db,
+            client,
+            config,
+            provider,
+            window=window,
+            now=now,
+            min_score=min_score,
+            max_turns=max_turns,
+            vault_root=vault_root,
+        )
+        db.checkpoint()
+
+    o = stats.outcome
+    degraded = " (degraded)" if o.degraded else ""
+    typer.echo(
+        f"Synthesis {window.label}: {stats.items_considered} item(s), {o.turns} turn(s), "
+        f"stop={o.stop_reason}{degraded}; {stats.weekly_entities} entit(ies), "
+        f"{stats.followups_open} open followup(s); ~{o.usage.total} tokens."
+    )
+    if stats.report_path is not None:
+        typer.echo(f"Wrote {stats.report_path}")
 
 
 def main() -> None:
