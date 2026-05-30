@@ -43,7 +43,7 @@ Constraints worth memorizing:
 | Synthesis | `researcher_agent/synthesis/` | M5. `tools.py` (agent tools, `{ok,...}` shapes), `agent.py` (provider-agnostic loop + normalized types), `providers.py` (Anthropic primary + Gemini fallback), `run.py` (orchestration). Prompt: `prompts/synthesize.md`. |
 | Cron | `.github/workflows/collect.yml` | Daily collect; commits `state.db` to the `state` branch (checkpoint + integrity-check first). |
 | Golden set | `config/golden_set.jsonl` | 25 labeled items; `make test-golden` asserts ≥85% top-1 (opt-in, costs tokens). |
-| Tests | `tests/` | Unit + snapshot + golden. 421 after M5 (345 after M4, 294 after M3, 198 after M2, 52 after M1); never let this drop silently. |
+| Tests | `tests/` | Unit + snapshot + golden. 409 after M5 (345 after M4, 294 after M3, 198 after M2, 52 after M1); never let this drop silently. |
 | Snapshots | `tests/snapshots/` | Vault rendering golden files. Regenerate with `UPDATE_SNAPSHOTS=1 pytest`. |
 | CI | `.github/workflows/ci.yml` | ruff + format-check + mypy --strict + pytest. |
 | state.db | **Not in this repo.** Will live on a dedicated `state` branch (regular commits, no force-push). | Adds full audit history; main stays clean. |

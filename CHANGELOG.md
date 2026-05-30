@@ -14,7 +14,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **Orchestration** (`synthesis/run.py`): loads the window, runs the agent, derives the week's `WeeklyEntity` roll-up deterministically from stored `ItemEntity`s (normalizing `week_starting` to the ISO-week Monday so any window satisfies the model validator), persists outputs, and renders to the vault. New `Database.list_items_in_window`.
   - **Prompt-as-file** `prompts/synthesize.md` (hashed at load like the classifier prompt).
   - **Weekly cron** `.github/workflows/synthesize.yml`: restores `state.db`, synthesizes (only if `ANTHROPIC_API_KEY`/`GEMINI_API_KEY` is set, else a clean skip), and persists `state.db` back to the `state` branch using the same hardened logic as collect; both workflows share one `state-branch` concurrency group so they never race.
-- Test suite grew to 421 (no new dependencies; `anthropic` was already declared). The real provider paths are exercised only against the live APIs (like the classifier's golden eval); all loop/tool/orchestration tests use a fake provider + MockTransport.
+- Test suite grew from 345 to 409 (no new dependencies; `anthropic` was already declared). The real provider paths are exercised only against the live APIs (like the classifier's golden eval); all loop/tool/orchestration tests use a fake provider + MockTransport.
 
 ### Fixed / hardened (post-M4 review remediation)
 - **Daily-collect cron now actually persists state (was failing every run).** The first real run surfaced a fatal bug — and reproducing it locally (with the runner's no-global-identity condition) uncovered a second latent one:
